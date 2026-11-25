@@ -710,18 +710,12 @@ export interface SavingsGoalsSummary {
   completedCount: number;
 }
 
-export function formatCurrency(
-  amount: number,
-  options: { decimals?: number } = {}
-): string {
-  const decimals = options.decimals ?? (Number.isInteger(amount) ? 0 : 2);
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  }).format(amount);
-}
+export {
+  APP_CURRENCY_CODE,
+  APP_CURRENCY_LOCALE,
+  APP_CURRENCY_SYMBOL,
+  formatCurrency,
+} from './currency';
 
 export function getMonthKeyFromDateKey(dateKey: string): string {
   return dateKey.slice(0, 7);

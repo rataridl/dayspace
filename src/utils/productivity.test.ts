@@ -20,6 +20,9 @@ import {
   DEFAULT_POMODORO_SETTINGS,
   filterJournalEntries,
   filterTransactions,
+  APP_CURRENCY_CODE,
+  APP_CURRENCY_LOCALE,
+  APP_CURRENCY_SYMBOL,
   formatCurrency,
   formatDeadlineLabel,
   formatMonthKeyLabel,
@@ -400,8 +403,14 @@ test('filterJournalEntries, sortJournalEntries, computeJournalMetrics, and getRe
 });
 
 test('computeMonthlyFinanceSummary, computeCategorySpending, computeMultiMonthCashflow, filterTransactions, and computeSavingsGoalsSummary work accurately', () => {
-  assert.equal(formatCurrency(1480), '$1,480');
-  assert.equal(formatCurrency(164.5), '$164.50');
+  assert.equal(APP_CURRENCY_CODE, 'IDR');
+  assert.equal(APP_CURRENCY_LOCALE, 'id-ID');
+  assert.equal(APP_CURRENCY_SYMBOL, 'Rp');
+  assert.equal(formatCurrency(1500000), 'Rp1.500.000');
+  assert.equal(formatCurrency(1480), 'Rp1.480');
+  assert.equal(formatCurrency(164.5), 'Rp165');
+  assert.equal(formatCurrency(0), 'Rp0');
+  assert.equal(formatCurrency(-50000), '-Rp50.000');
   assert.equal(getMonthKeyFromDateKey('2026-11-25'), '2026-11');
   assert.equal(shiftMonthKey('2026-11', -1), '2026-10');
   assert.equal(shiftMonthKey('2026-01', -1), '2025-12');

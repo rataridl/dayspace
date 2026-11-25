@@ -4,6 +4,7 @@ import {
   SavingsGoal,
   TransactionType,
 } from '../types/dayspace';
+import { APP_CURRENCY_SYMBOL } from '../utils/currency';
 import {
   EXPENSE_CATEGORIES,
   getTodayDateKey,
@@ -257,19 +258,19 @@ export function FinanceModals({
                 htmlFor="finance-tx-amount"
                 className="block text-sm font-medium text-[#1C241E] mb-1.5"
               >
-                Amount ($)
+                Amount ({APP_CURRENCY_SYMBOL})
               </label>
               <input
                 id="finance-tx-amount"
                 type="number"
                 min="0.01"
-                step="0.01"
+                step="any"
                 value={txAmount}
                 onChange={(e) => {
                   setTxAmount(e.target.value);
                   if (txError) setTxError('');
                 }}
-                placeholder="0.00"
+                placeholder="0"
                 className="w-full rounded-xl border border-[#DDD8CD] bg-[#FBF9F4] px-3.5 py-2.5 text-sm font-mono tabular-nums text-[#1C241E] placeholder:text-[#7D8880] focus:border-[#1E3F31] focus:bg-white focus:outline-none"
               />
             </div>
@@ -431,13 +432,13 @@ export function FinanceModals({
                 htmlFor="finance-goal-current"
                 className="block text-sm font-medium text-[#1C241E] mb-1.5"
               >
-                Saved so far ($)
+                Saved so far ({APP_CURRENCY_SYMBOL})
               </label>
               <input
                 id="finance-goal-current"
                 type="number"
                 min="0"
-                step="1"
+                step="any"
                 value={goalCurrent}
                 onChange={(e) => {
                   setGoalCurrent(e.target.value);
@@ -452,13 +453,13 @@ export function FinanceModals({
                 htmlFor="finance-goal-target"
                 className="block text-sm font-medium text-[#1C241E] mb-1.5"
               >
-                Target amount ($)
+                Target amount ({APP_CURRENCY_SYMBOL})
               </label>
               <input
                 id="finance-goal-target"
                 type="number"
                 min="1"
-                step="1"
+                step="any"
                 value={goalTarget}
                 onChange={(e) => {
                   setGoalTarget(e.target.value);

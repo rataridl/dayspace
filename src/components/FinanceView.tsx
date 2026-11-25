@@ -17,13 +17,16 @@ import {
   TransactionType,
 } from '../types/dayspace';
 import {
+  APP_CURRENCY_SYMBOL,
+  formatCurrency,
+} from '../utils/currency';
+import {
   computeCategorySpending,
   computeMonthlyFinanceSummary,
   computeMultiMonthCashflow,
   computeSavingsGoalsSummary,
   EXPENSE_CATEGORIES,
   filterTransactions,
-  formatCurrency,
   formatMonthKeyLabel,
   formatShortDateLabel,
   getMonthKeyFromDateKey,
@@ -442,8 +445,8 @@ export function FinanceView({
                       {pt.shortLabel}
                     </span>
                     <span className="block font-mono text-[10px] text-[#7D8880] tabular-nums">
-                      {pt.net >= 0 ? '+' : ''}
-                      {formatCurrency(pt.net, { decimals: 0 })}
+                      {pt.net > 0 ? '+' : ''}
+                      {formatCurrency(pt.net)}
                     </span>
                   </div>
                 </button>
@@ -671,7 +674,7 @@ export function FinanceView({
                           onChange={(e) =>
                             setDepositAmountInput(e.target.value)
                           }
-                          placeholder="Amount ($)"
+                          placeholder={`Amount (${APP_CURRENCY_SYMBOL})`}
                           autoFocus
                           className="w-full min-w-0 rounded-lg border border-[#DDD8CD] bg-[#FBF9F4] px-2.5 py-1.5 text-xs font-mono tabular-nums text-[#1C241E] focus:border-[#1E3F31] focus:bg-white focus:outline-none"
                         />
@@ -699,18 +702,18 @@ export function FinanceView({
                           <button
                             type="button"
                             onClick={() => onContributeGoal(goal.id, 50)}
-                            aria-label={`Add $50 to "${goal.name}"`}
+                            aria-label={`Add ${formatCurrency(50)} to "${goal.name}"`}
                             className="px-2.5 py-1 rounded-lg bg-[#FBF9F4] border border-[#DDD8CD] text-xs font-mono font-medium text-[#1C241E] hover:bg-[#EEF4EF] hover:border-[#7A9A83] transition-colors whitespace-nowrap"
                           >
-                            +$50
+                            +{formatCurrency(50)}
                           </button>
                           <button
                             type="button"
                             onClick={() => onContributeGoal(goal.id, 100)}
-                            aria-label={`Add $100 to "${goal.name}"`}
+                            aria-label={`Add ${formatCurrency(100)} to "${goal.name}"`}
                             className="px-2.5 py-1 rounded-lg bg-[#FBF9F4] border border-[#DDD8CD] text-xs font-mono font-medium text-[#1C241E] hover:bg-[#EEF4EF] hover:border-[#7A9A83] transition-colors whitespace-nowrap"
                           >
-                            +$100
+                            +{formatCurrency(100)}
                           </button>
                         </div>
                         <button
