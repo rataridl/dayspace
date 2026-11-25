@@ -15,6 +15,7 @@ import {
   CalendarEvent,
   HabitItem,
   NavigationView,
+  PomodoroSessionRecord,
   QuoteItem,
   TaskCategory,
   TaskItem,
@@ -36,6 +37,7 @@ import {
   getUpcomingEvents,
   sortTasksForDashboard,
 } from '../utils/productivity';
+import { DashboardAnalytics } from './DashboardAnalytics';
 import { QuickModalKind } from './QuickAddModals';
 
 interface DashboardViewProps {
@@ -43,6 +45,7 @@ interface DashboardViewProps {
   tasks: TaskItem[];
   habits: HabitItem[];
   events: CalendarEvent[];
+  pomodoroSessions: PomodoroSessionRecord[];
   quote: QuoteItem;
   onOpenQuickModal: (kind: QuickModalKind) => void;
   onNavigate: (view: NavigationView) => void;
@@ -66,6 +69,7 @@ export function DashboardView({
   tasks,
   habits,
   events,
+  pomodoroSessions,
   quote,
   onOpenQuickModal,
   onNavigate,
@@ -630,6 +634,16 @@ export function DashboardView({
           </section>
         </div>
       </div>
+
+      {/* Dashboard Analytics & Insights */}
+      <DashboardAnalytics
+        tasks={tasks}
+        habits={habits}
+        pomodoroSessions={pomodoroSessions}
+        todayKey={todayKey}
+        onNavigate={onNavigate}
+        onOpenQuickModal={onOpenQuickModal}
+      />
     </div>
   );
 }

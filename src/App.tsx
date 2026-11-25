@@ -144,6 +144,7 @@ export default function App() {
               tasks={state.tasks}
               habits={state.habits}
               events={state.events}
+              pomodoroSessions={state.pomodoroSessions}
               quote={currentQuote}
               onOpenQuickModal={(kind) => openCreateModal(kind)}
               onNavigate={setActiveView}
