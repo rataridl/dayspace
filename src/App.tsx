@@ -214,6 +214,7 @@ export default function App() {
           {activeView === NavigationView.Journal && (
             <JournalView
               entries={state.journalEntries}
+              storageError={storageError}
               onAddEntry={addJournalEntry}
               onUpdateEntry={updateJournalEntry}
               onDeleteEntry={deleteJournalEntry}

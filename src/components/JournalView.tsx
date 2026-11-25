@@ -1,12 +1,18 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   BookOpen,
+  Camera,
+  ChevronLeft,
+  ChevronRight,
   CloudMoon,
   CloudRain,
   Flame,
   Heart,
+  Image as ImageIcon,
   Leaf,
+  Loader2,
+  Maximize2,
   Moon,
   Pencil,
   Plus,
@@ -16,7 +22,13 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { JournalEntry, JournalMood } from '../types/dayspace';
+import { JournalEntry, JournalMood, JournalPhoto } from '../types/dayspace';
+import {
+  compressJournalImageFile,
+  formatStorageQuotaMessage,
+  isSupportedJournalImageFile,
+  MAX_JOURNAL_PHOTOS,
+} from '../utils/journalPhotos';
 import {
   computeJournalMetrics,
   filterJournalEntries,
@@ -35,12 +47,20 @@ export interface JournalFormPayload {
   gratitude: string[];
   body: string;
   tags: string[];
+  photos?: JournalPhoto[];
+}
+
+export interface JournalSaveResult {
+  ok: boolean;
+  entryId?: string;
+  error?: string;
 }
 
 interface JournalViewProps {
   entries: JournalEntry[];
-  onAddEntry: (input: JournalFormPayload) => string;
-  onUpdateEntry: (entryId: string, updates: JournalFormPayload) => void;
+  storageError?: string | null;
+  onAddEntry: (input: JournalFormPayload) => JournalSaveResult;
+  onUpdateEntry: (entryId: string, updates: JournalFormPayload) => JournalSaveResult;
   onDeleteEntry: (entryId: string) => void;
 }
 
@@ -95,6 +115,7 @@ type ComposerMode = 'read' | 'create' | 'edit';
 
 export function JournalView({
   entries,
+  storageError,
   onAddEntry,
   onUpdateEntry,
   onDeleteEntry,
@@ -114,7 +135,21 @@ export function JournalView({
   const [formGratitude, setFormGratitude] = useState<string[]>(['', '', '']);
   const [formBody, setFormBody] = useState('');
   const [formTags, setFormTags] = useState('');
+  const [formPhotos, setFormPhotos] = useState<JournalPhoto[]>([]);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [photoError, setPhotoError] = useState('');
+  const [readerNoticeError, setReaderNoticeError] = useState('');
   const [formError, setFormError] = useState('');
+
+  // Lightbox preview state
+  const [lightboxState, setLightboxState] = useState<{
+    photos: JournalPhoto[];
+    index: number;
+    title: string;
+    date: string;
+  } | null>(null);
+
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
 
   const metrics = useMemo(
     () => computeJournalMetrics(entries, todayKey),
@@ -152,6 +187,33 @@ export function JournalView({
     [filteredEntries, entries, selectedEntryId]
   );
 
+  useEffect(() => {
+    if (!lightboxState) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setLightboxState(null);
+      } else if (e.key === 'ArrowRight' && lightboxState.photos.length > 1) {
+        setLightboxState((prev) =>
+          prev
+            ? { ...prev, index: (prev.index + 1) % prev.photos.length }
+            : null
+        );
+      } else if (e.key === 'ArrowLeft' && lightboxState.photos.length > 1) {
+        setLightboxState((prev) =>
+          prev
+            ? {
+                ...prev,
+                index:
+                  (prev.index - 1 + prev.photos.length) % prev.photos.length,
+              }
+            : null
+        );
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [lightboxState]);
+
   const openCreateComposer = () => {
     setFormDate(todayKey);
     setFormTitle('');
@@ -159,6 +221,10 @@ export function JournalView({
     setFormGratitude(['', '', '']);
     setFormBody('');
     setFormTags('');
+    setFormPhotos([]);
+    setPhotoUploading(false);
+    setPhotoError('');
+    setReaderNoticeError('');
     setFormError('');
     setComposerMode('create');
     setMobileDetailOpen(true);
@@ -179,6 +245,10 @@ export function JournalView({
     );
     setFormBody(entry.body);
     setFormTags(entry.tags.join(', '));
+    setFormPhotos(entry.photos ? [...entry.photos] : []);
+    setPhotoUploading(false);
+    setPhotoError('');
+    setReaderNoticeError('');
     setFormError('');
     setComposerMode('edit');
     setMobileDetailOpen(true);
@@ -186,20 +256,106 @@ export function JournalView({
 
   const handleSelectEntry = (entryId: string) => {
     setSelectedEntryId(entryId);
+    setReaderNoticeError('');
     setComposerMode('read');
     setMobileDetailOpen(true);
   };
 
   const handleCancelComposer = () => {
     setFormError('');
+    setPhotoError('');
+    setPhotoUploading(false);
     setComposerMode('read');
     if (filteredEntries.length === 0) {
       setMobileDetailOpen(false);
     }
   };
 
+  const handlePhotoFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = '';
+    if (fileList.length === 0) return;
+
+    const remainingSlots = MAX_JOURNAL_PHOTOS - formPhotos.length;
+    if (remainingSlots <= 0) {
+      setPhotoError(
+        `Maximum ${MAX_JOURNAL_PHOTOS} photos per journal entry. Remove a photo before adding another.`
+      );
+      return;
+    }
+
+    const filesToProcess = fileList.slice(0, remainingSlots);
+    const notices: string[] = [];
+    if (fileList.length > remainingSlots) {
+      notices.push(
+        `Only ${remainingSlots} photo${remainingSlots === 1 ? '' : 's'} added (maximum ${MAX_JOURNAL_PHOTOS} per entry).`
+      );
+    }
+
+    setPhotoUploading(true);
+    setPhotoError('');
+    const newlyAdded: JournalPhoto[] = [];
+
+    for (const file of filesToProcess) {
+      if (!isSupportedJournalImageFile(file)) {
+        notices.push(
+          `"${file.name}" skipped — supported formats are JPG, JPEG, PNG, and WEBP.`
+        );
+        continue;
+      }
+      try {
+        const compressed = await compressJournalImageFile(file);
+        newlyAdded.push(compressed);
+      } catch (err) {
+        notices.push(
+          err instanceof Error
+            ? err.message
+            : `Could not attach "${file.name}".`
+        );
+      }
+    }
+
+    if (newlyAdded.length > 0) {
+      setFormPhotos((prev) =>
+        [...prev, ...newlyAdded].slice(0, MAX_JOURNAL_PHOTOS)
+      );
+    }
+    if (notices.length > 0) {
+      setPhotoError(notices.join(' '));
+    }
+    setPhotoUploading(false);
+  };
+
+  const handleRemoveComposerPhoto = (photoId: string) => {
+    setFormPhotos((prev) => prev.filter((p) => p.id !== photoId));
+    setPhotoError('');
+    if (formError) setFormError('');
+  };
+
+  const handleRemoveEntryPhoto = (entry: JournalEntry, photoId: string) => {
+    const remainingPhotos = (entry.photos || []).filter((p) => p.id !== photoId);
+    const res = onUpdateEntry(entry.id, {
+      date: entry.date,
+      title: entry.title,
+      mood: entry.mood,
+      gratitude: entry.gratitude,
+      body: entry.body,
+      tags: entry.tags,
+      photos: remainingPhotos,
+    });
+    if (!res.ok) {
+      setReaderNoticeError(formatStorageQuotaMessage(res.error));
+    } else {
+      setReaderNoticeError('');
+    }
+  };
+
   const handleSubmitEntry = (e: FormEvent) => {
     e.preventDefault();
+    if (photoUploading) {
+      setFormError('Please wait for your photos to finish processing.');
+      return;
+    }
     if (!formTitle.trim()) {
       setFormError('Please add a title for your journal entry.');
       return;
@@ -221,19 +377,29 @@ export function JournalView({
       gratitude: formGratitude.map((g) => g.trim()).filter(Boolean),
       body: formBody.trim(),
       tags: parsedTags,
+      photos: formPhotos,
     };
 
     if (composerMode === 'edit' && selectedEntryId) {
-      onUpdateEntry(selectedEntryId, payload);
+      const saveRes = onUpdateEntry(selectedEntryId, payload);
+      if (!saveRes.ok) {
+        setFormError(formatStorageQuotaMessage(saveRes.error));
+        return;
+      }
       setComposerMode('read');
     } else {
-      const createdId = onAddEntry(payload);
-      setSelectedEntryId(createdId);
+      const saveRes = onAddEntry(payload);
+      if (!saveRes.ok || !saveRes.entryId) {
+        setFormError(formatStorageQuotaMessage(saveRes.error));
+        return;
+      }
+      setSelectedEntryId(saveRes.entryId);
       setSearchQuery('');
       setMoodFilter('all');
       setComposerMode('read');
     }
     setFormError('');
+    setPhotoError('');
     setMobileDetailOpen(true);
   };
 
@@ -506,8 +672,14 @@ export function JournalView({
                         <span aria-hidden="true">·</span>
                         <span>{formatShortDateLabel(entry.date, todayKey)}</span>
                       </span>
-                      <span className="font-mono text-[11px] tabular-nums text-[#6A786D]">
-                        {entry.gratitude.length} gratitude
+                      <span className="inline-flex items-center gap-2 font-mono text-[11px] tabular-nums text-[#6A786D]">
+                        {(entry.photos?.length || 0) > 0 && (
+                          <span className="inline-flex items-center gap-1 text-[#2D5A43]">
+                            <Camera className="w-3 h-3" aria-hidden="true" />
+                            <span>{entry.photos!.length}</span>
+                          </span>
+                        )}
+                        <span>{entry.gratitude.length} gratitude</span>
                       </span>
                     </div>
 
@@ -724,6 +896,132 @@ export function JournalView({
                 />
               </div>
 
+              {/* Photo Memories Upload & Previews */}
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                  <div>
+                    <span className="block text-sm font-medium text-[#1C241E]">
+                      Photos &amp; memories
+                    </span>
+                    <span className="block text-xs text-[#58645B] tabular-nums">
+                      JPG, JPEG, PNG, or WEBP · {formPhotos.length}/
+                      {MAX_JOURNAL_PHOTOS} attached
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => photoInputRef.current?.click()}
+                    disabled={
+                      photoUploading || formPhotos.length >= MAX_JOURNAL_PHOTOS
+                    }
+                    aria-label="Add photo to journal entry"
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#DDD8CD] bg-[#FBF9F4] text-xs font-medium text-[#1E3F31] hover:bg-[#EEF4EF] hover:border-[#7A9A83] disabled:opacity-50 disabled:pointer-events-none transition-colors whitespace-nowrap shrink-0"
+                  >
+                    {photoUploading ? (
+                      <Loader2
+                        className="w-3.5 h-3.5 animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+                    )}
+                    <span>Add Photo</span>
+                  </button>
+                  <input
+                    ref={photoInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                    multiple
+                    aria-label="Upload photos for journal entry"
+                    onChange={handlePhotoFileChange}
+                    className="hidden"
+                  />
+                </div>
+
+                {photoUploading && (
+                  <div
+                    role="status"
+                    className="mb-3 flex items-center gap-2 rounded-xl border border-[#C6DEC9] bg-[#EDF3EE] px-3.5 py-2 text-xs font-medium text-[#1E3F31]"
+                  >
+                    <Loader2
+                      className="w-3.5 h-3.5 animate-spin shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span>Optimizing and preparing your photo memories...</span>
+                  </div>
+                )}
+
+                {photoError && (
+                  <p
+                    role="alert"
+                    className="mb-3 rounded-xl border border-[#FECDCA] bg-[#FEF3F2] px-3.5 py-2 text-xs text-[#B42318]"
+                  >
+                    {photoError}
+                  </p>
+                )}
+
+                {formPhotos.length === 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => photoInputRef.current?.click()}
+                    disabled={photoUploading}
+                    aria-label="Choose photos to attach to this journal entry"
+                    className="w-full rounded-2xl border border-dashed border-[#D5CFC2] bg-[#FCFBF8] px-4 py-6 text-center hover:border-[#7A9A83] hover:bg-[#F5F8F4] transition-colors"
+                  >
+                    <ImageIcon
+                      className="w-6 h-6 text-[#7A9A83] mx-auto mb-2"
+                      aria-hidden="true"
+                    />
+                    <p className="text-xs font-medium text-[#1C241E]">
+                      No photo attached yet
+                    </p>
+                    <p className="mt-1 text-[11px] text-[#58645B]">
+                      Click Add Photo to attach up to {MAX_JOURNAL_PHOTOS} snapshots from your device.
+                    </p>
+                  </button>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    {formPhotos.map((photo, idx) => (
+                      <div
+                        key={photo.id}
+                        className="group relative rounded-2xl bg-[#FBF9F4] p-1.5 pb-2 border border-[#E5E1D8] shadow-[0_2px_10px_rgba(28,36,30,0.05)]"
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setLightboxState({
+                              photos: formPhotos,
+                              index: idx,
+                              title: formTitle.trim() || 'Draft memory',
+                              date: formDate || todayKey,
+                            })
+                          }
+                          aria-label={`Preview photo ${idx + 1}${photo.name ? `: ${photo.name}` : ''}`}
+                          className="block w-full aspect-[4/3] overflow-hidden rounded-xl bg-[#EFECE4] focus:outline-none focus:ring-2 focus:ring-[#1E3F31]"
+                        >
+                          <img
+                            src={photo.dataUrl}
+                            alt={photo.name || `Journal memory ${idx + 1}`}
+                            className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveComposerPhoto(photo.id)}
+                          aria-label={`Remove photo ${idx + 1}${photo.name ? ` (${photo.name})` : ''}`}
+                          className="absolute top-2.5 right-2.5 inline-flex h-7 w-7 items-center justify-center rounded-full bg-[#1C241E]/75 text-white hover:bg-[#9A3B30] transition-colors shadow-xs"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                        <p className="mt-1.5 px-1 truncate text-[11px] font-medium text-[#58645B]">
+                          {photo.name || `Memory ${idx + 1}`}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div>
                 <label
                   htmlFor="journal-entry-tags"
@@ -751,7 +1049,8 @@ export function JournalView({
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-sm font-medium text-white bg-[#1E3F31] rounded-xl hover:bg-[#152E24] transition-colors whitespace-nowrap shrink-0"
+                  disabled={photoUploading}
+                  className="px-5 py-2 text-sm font-medium text-white bg-[#1E3F31] rounded-xl hover:bg-[#152E24] disabled:opacity-60 transition-colors whitespace-nowrap shrink-0"
                 >
                   {composerMode === 'edit' ? 'Update entry' : 'Save entry'}
                 </button>
@@ -846,6 +1145,141 @@ export function JournalView({
                   {activeEntry.body}
                 </p>
               </div>
+
+              {(readerNoticeError || storageError) && (
+                <p
+                  role="alert"
+                  className="rounded-xl border border-[#FECDCA] bg-[#FEF3F2] px-3.5 py-2.5 text-xs text-[#B42318]"
+                >
+                  {readerNoticeError || storageError}
+                </p>
+              )}
+
+              {/* Scrapbook Photo Gallery */}
+              {activeEntry.photos && activeEntry.photos.length > 0 ? (
+                <div className="space-y-3 pt-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-xs font-semibold tracking-wide text-[#58645B]">
+                      Memories ({activeEntry.photos.length}/
+                      {MAX_JOURNAL_PHOTOS})
+                    </h3>
+                    {activeEntry.photos.length < MAX_JOURNAL_PHOTOS && (
+                      <button
+                        type="button"
+                        onClick={() => openEditComposer(activeEntry)}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-[#1E3F31] hover:underline"
+                      >
+                        <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span>Add photo</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div
+                    className={
+                      activeEntry.photos.length === 1
+                        ? 'grid grid-cols-1 max-w-md gap-3'
+                        : activeEntry.photos.length === 2
+                        ? 'grid grid-cols-1 sm:grid-cols-2 gap-3.5'
+                        : activeEntry.photos.length === 3
+                        ? 'grid grid-cols-2 sm:grid-cols-3 gap-3'
+                        : activeEntry.photos.length === 4
+                        ? 'grid grid-cols-2 gap-3.5'
+                        : 'grid grid-cols-2 sm:grid-cols-6 gap-3'
+                    }
+                  >
+                    {activeEntry.photos.map((photo, idx) => {
+                      const count = activeEntry.photos!.length;
+                      const spanClass =
+                        count === 3 && idx === 0
+                          ? 'col-span-2 sm:col-span-1'
+                          : count === 5 && idx < 2
+                          ? 'sm:col-span-3'
+                          : count === 5 && idx >= 2
+                          ? idx === 4
+                            ? 'col-span-2 sm:col-span-2'
+                            : 'sm:col-span-2'
+                          : '';
+
+                      return (
+                        <figure
+                          key={photo.id}
+                          className={`group relative rounded-2xl bg-[#FBF9F4] p-2 pb-2.5 border border-[#E5E1D8] shadow-[0_3px_12px_rgba(28,36,30,0.06)] ${spanClass}`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLightboxState({
+                                photos: activeEntry.photos!,
+                                index: idx,
+                                title: activeEntry.title,
+                                date: activeEntry.date,
+                              })
+                            }
+                            aria-label={`View photo ${idx + 1} of ${count} from "${activeEntry.title}" in larger preview`}
+                            className={`relative block w-full overflow-hidden rounded-xl bg-[#EFECE4] focus:outline-none focus:ring-2 focus:ring-[#1E3F31] ${
+                              count === 1 ? 'aspect-[4/3]' : 'aspect-[4/3]'
+                            }`}
+                          >
+                            <img
+                              src={photo.dataUrl}
+                              alt={
+                                photo.name ||
+                                `${activeEntry.title} memory ${idx + 1}`
+                              }
+                              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+                            />
+                            <span
+                              aria-hidden="true"
+                              className="absolute bottom-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-[#1C241E]/65 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <Maximize2 className="w-3.5 h-3.5" />
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleRemoveEntryPhoto(activeEntry, photo.id)
+                            }
+                            aria-label={`Remove photo ${idx + 1} from "${activeEntry.title}"`}
+                            className="absolute top-3.5 right-3.5 inline-flex h-7 w-7 items-center justify-center rounded-full bg-[#1C241E]/70 text-white opacity-85 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100 hover:bg-[#9A3B30] transition-all shadow-xs"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+
+                          <figcaption className="mt-2 px-1 flex items-center justify-between gap-2 text-[11px] text-[#58645B]">
+                            <span className="truncate">
+                              {photo.name || `Memory ${idx + 1}`}
+                            </span>
+                            <span className="font-mono text-[10px] text-[#7D8880] shrink-0">
+                              #{idx + 1}
+                            </span>
+                          </figcaption>
+                        </figure>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-[#E2DDD2] bg-[#FCFBF8] px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 text-xs text-[#58645B]">
+                    <ImageIcon
+                      className="w-4 h-4 text-[#7A9A83] shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span>No photos attached to this entry yet.</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openEditComposer(activeEntry)}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium text-[#1E3F31] hover:underline whitespace-nowrap"
+                  >
+                    <Camera className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>Add photo</span>
+                  </button>
+                </div>
+              )}
 
               {/* Quiet Unboxed Tags & Date Footer */}
               <div className="pt-4 border-t border-[#EFECE4] flex flex-wrap items-center justify-between gap-2 text-xs text-[#58645B]">
@@ -1010,6 +1444,99 @@ export function JournalView({
           )}
         </div>
       </section>
+
+      {/* Photo Lightbox Modal */}
+      {lightboxState && lightboxState.photos[lightboxState.index] && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Photo preview for ${lightboxState.title}`}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#141C16]/85 backdrop-blur-xs p-4 sm:p-6"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setLightboxState(null);
+          }}
+        >
+          <div className="relative w-full max-w-4xl rounded-2xl bg-[#FBF9F4] border border-[#DDD8CD] p-3 sm:p-4 shadow-2xl">
+            <div className="flex items-center justify-between gap-3 pb-3 border-b border-[#EAE6DC]">
+              <div className="min-w-0">
+                <p className="font-serif text-lg font-medium text-[#1C241E] truncate">
+                  {lightboxState.title}
+                </p>
+                <p className="text-xs text-[#58645B] font-mono tabular-nums">
+                  {formatLongDateFromKey(lightboxState.date)} · Photo{' '}
+                  {lightboxState.index + 1} of {lightboxState.photos.length}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLightboxState(null)}
+                aria-label="Close photo preview"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#DDD8CD] bg-white text-[#1C241E] hover:bg-[#F3EFE6] transition-colors shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="relative mt-3 flex items-center justify-center rounded-xl bg-[#1C241E]/5 overflow-hidden">
+              <img
+                src={lightboxState.photos[lightboxState.index].dataUrl}
+                alt={
+                  lightboxState.photos[lightboxState.index].name ||
+                  `${lightboxState.title} photo ${lightboxState.index + 1}`
+                }
+                className="max-h-[70vh] w-auto max-w-full object-contain rounded-lg"
+              />
+
+              {lightboxState.photos.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLightboxState((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              index:
+                                (prev.index - 1 + prev.photos.length) %
+                                prev.photos.length,
+                            }
+                          : null
+                      )
+                    }
+                    aria-label="Previous photo"
+                    className="absolute left-2 sm:left-3 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/90 text-[#1C241E] border border-[#DDD8CD] shadow-md hover:bg-white transition-colors"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setLightboxState((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              index: (prev.index + 1) % prev.photos.length,
+                            }
+                          : null
+                      )
+                    }
+                    aria-label="Next photo"
+                    className="absolute right-2 sm:right-3 inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/90 text-[#1C241E] border border-[#DDD8CD] shadow-md hover:bg-white transition-colors"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </>
+              )}
+            </div>
+
+            {lightboxState.photos[lightboxState.index].name && (
+              <p className="mt-2.5 text-center text-xs text-[#58645B]">
+                {lightboxState.photos[lightboxState.index].name}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

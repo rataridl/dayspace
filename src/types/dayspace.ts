@@ -84,6 +84,15 @@ export interface CalendarEvent {
   notes?: string;
 }
 
+export interface JournalPhoto {
+  id: string;
+  dataUrl: string;
+  name?: string;
+  width?: number;
+  height?: number;
+  addedAt: string;
+}
+
 export interface JournalEntry {
   id: string;
   date: string; // YYYY-MM-DD
@@ -92,6 +101,7 @@ export interface JournalEntry {
   gratitude: string[];
   body: string;
   tags: string[];
+  photos?: JournalPhoto[];
   createdAt: string;
   updatedAt: string;
 }

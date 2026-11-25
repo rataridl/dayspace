@@ -17,6 +17,10 @@ import {
   TransactionType,
 } from '../types/dayspace';
 import {
+  isQuotaExceededError,
+  sanitizeJournalPhotos,
+} from './journalPhotos';
+import {
   clampDurationMinutes,
   DEFAULT_POMODORO_SETTINGS,
   getTodayDateKey,
@@ -186,6 +190,7 @@ function sanitizeJournalEntries(
     const tags = Array.isArray(item.tags)
       ? item.tags.filter((t): t is string => typeof t === 'string')
       : [];
+    const photos = sanitizeJournalPhotos(item.photos);
     const nowIso = new Date().toISOString();
     result.push({
       id,
@@ -195,6 +200,7 @@ function sanitizeJournalEntries(
       gratitude,
       body: asNonEmptyString(item.body),
       tags,
+      ...(photos.length > 0 ? { photos } : {}),
       createdAt: asNonEmptyString(item.createdAt, nowIso),
       updatedAt: asNonEmptyString(item.updatedAt, nowIso),
     });
@@ -455,6 +461,13 @@ export function saveDayspaceState(
     target.setItem(DAYSPACE_STORAGE_KEY, JSON.stringify(state));
     return { ok: true };
   } catch (err) {
+    if (isQuotaExceededError(err)) {
+      return {
+        ok: false,
+        error:
+          'Storage limit exceeded (QuotaExceededError). Remove one or more photos or export a backup to free up browser LocalStorage space.',
+      };
+    }
     return {
       ok: false,
       error:

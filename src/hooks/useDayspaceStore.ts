@@ -9,6 +9,7 @@ import {
   HabitItem,
   JournalEntry,
   JournalMood,
+  JournalPhoto,
   PomodoroMode,
   PomodoroSessionRecord,
   PomodoroSettings,
@@ -19,6 +20,7 @@ import {
   TransactionType,
   UserProfile,
 } from '../types/dayspace';
+import { sanitizeJournalPhotos } from '../utils/journalPhotos';
 import {
   clampDurationMinutes,
   getTodayDateKey,
@@ -398,9 +400,11 @@ export function useDayspaceStore(cloudUserId?: string | null) {
       gratitude: string[];
       body: string;
       tags: string[];
-    }): string => {
+      photos?: JournalPhoto[];
+    }): { ok: boolean; entryId?: string; error?: string } => {
       const nowIso = new Date().toISOString();
       const id = `journal-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const photos = sanitizeJournalPhotos(input.photos);
       const newEntry: JournalEntry = {
         id,
         date: input.date || getTodayDateKey(),
@@ -409,14 +413,25 @@ export function useDayspaceStore(cloudUserId?: string | null) {
         gratitude: input.gratitude.map((g) => g.trim()).filter(Boolean),
         body: input.body.trim(),
         tags: input.tags.map((t) => t.trim()).filter(Boolean),
+        ...(photos.length > 0 ? { photos } : {}),
         createdAt: nowIso,
         updatedAt: nowIso,
       };
-      setState((prev) => ({
-        ...prev,
-        journalEntries: [newEntry, ...prev.journalEntries],
-      }));
-      return id;
+      const nextState: DayspaceState = {
+        ...stateRef.current,
+        journalEntries: [newEntry, ...stateRef.current.journalEntries],
+      };
+      const saveResult = saveDayspaceState(nextState);
+      if (!saveResult.ok) {
+        const message =
+          saveResult.error ||
+          'Storage limit reached — unable to save journal entry locally.';
+        setStorageError(message);
+        return { ok: false, error: message };
+      }
+      setStorageError(null);
+      setState(nextState);
+      return { ok: true, entryId: id };
     },
     []
   );
@@ -431,12 +446,14 @@ export function useDayspaceStore(cloudUserId?: string | null) {
         gratitude: string[];
         body: string;
         tags: string[];
+        photos?: JournalPhoto[];
       }
-    ) => {
+    ): { ok: boolean; entryId?: string; error?: string } => {
       const nowIso = new Date().toISOString();
-      setState((prev) => ({
-        ...prev,
-        journalEntries: prev.journalEntries.map((entry) =>
+      const photos = sanitizeJournalPhotos(updates.photos);
+      const nextState: DayspaceState = {
+        ...stateRef.current,
+        journalEntries: stateRef.current.journalEntries.map((entry) =>
           entry.id === entryId
             ? {
                 ...entry,
@@ -446,11 +463,23 @@ export function useDayspaceStore(cloudUserId?: string | null) {
                 gratitude: updates.gratitude.map((g) => g.trim()).filter(Boolean),
                 body: updates.body.trim(),
                 tags: updates.tags.map((t) => t.trim()).filter(Boolean),
+                photos: photos.length > 0 ? photos : undefined,
                 updatedAt: nowIso,
               }
             : entry
         ),
-      }));
+      };
+      const saveResult = saveDayspaceState(nextState);
+      if (!saveResult.ok) {
+        const message =
+          saveResult.error ||
+          'Storage limit reached — unable to update journal entry locally.';
+        setStorageError(message);
+        return { ok: false, error: message };
+      }
+      setStorageError(null);
+      setState(nextState);
+      return { ok: true, entryId };
     },
     []
   );
