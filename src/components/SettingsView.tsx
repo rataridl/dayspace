@@ -13,6 +13,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import type { SupabaseEnvDiagnostic } from '../lib/supabase';
 import { DayspaceState, UserProfile } from '../types/dayspace';
 import { getTodayDateKey } from '../utils/productivity';
 import { exportDayspaceBackup, parseDayspaceBackup } from '../utils/storage';
@@ -30,6 +31,7 @@ interface SettingsViewProps {
     loading: boolean;
     submitting: boolean;
     configured: boolean;
+    envDiagnostic: SupabaseEnvDiagnostic;
     authError: string | null;
     authNotice: string | null;
     onSignIn: (email: string, password: string) => Promise<boolean>;
@@ -300,6 +302,27 @@ export function SettingsView({
               to your environment to enable optional account sign-in and cloud
               sync.
             </p>
+            <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] text-[#4B574E]">
+              <span>
+                VITE_SUPABASE_URL:{' '}
+                <strong className="text-[#1C241E]">
+                  {String(supabaseAuth.envDiagnostic.hasUrl)}
+                </strong>
+              </span>
+              <span>
+                VITE_SUPABASE_PUBLISHABLE_KEY:{' '}
+                <strong className="text-[#1C241E]">
+                  {String(supabaseAuth.envDiagnostic.hasPublishableKey)}
+                </strong>
+              </span>
+              {supabaseAuth.envDiagnostic.hasUrl &&
+                !supabaseAuth.envDiagnostic.hasValidUrl && (
+                  <span>
+                    Valid URL format:{' '}
+                    <strong className="text-[#9A3B30]">false</strong>
+                  </span>
+                )}
+            </div>
           </div>
         ) : supabaseAuth.loading ? (
           <p className="mt-4 text-xs text-[#58645B]">

@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { User } from '@supabase/supabase-js';
-import { isSupabaseConfigured, supabase } from '../lib/supabase';
+import {
+  isSupabaseConfigured,
+  supabase,
+  supabaseEnvDiagnostic,
+} from '../lib/supabase';
 
 function getRedirectUrl(): string | undefined {
   if (typeof window === 'undefined') return undefined;
   try {
-    const meta = import.meta as unknown as { env?: { BASE_URL?: string } };
-    const base = meta?.env?.BASE_URL || '/';
+    const base =
+      typeof import.meta !== 'undefined' && import.meta.env
+        ? import.meta.env.BASE_URL || '/'
+        : '/';
     return new URL(base, window.location.origin).toString();
   } catch {
     return window.location.origin;
@@ -162,6 +168,7 @@ export function useSupabaseAuth() {
     loading,
     submitting,
     configured: isSupabaseConfigured,
+    envDiagnostic: supabaseEnvDiagnostic,
     authError,
     authNotice,
     signIn,

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createInitialDayspaceState } from '../data/seed';
+import { evaluateSupabaseEnv, normalizeEnvValue } from '../lib/supabase';
 import { createEmptyDayspaceState } from './storage';
 import {
   hasMeaningfulWorkspaceData,
@@ -44,4 +45,35 @@ test('resolveInitialCloudSync restores valid non-empty cloud data cleanly', () =
   assert.equal(resolved.shouldUploadLocal, false);
   assert.equal(resolved.stateToUse.profile.name, 'Elena');
   assert.equal(resolved.stateToUse.tasks.length, cloud.tasks.length);
+});
+
+test('evaluateSupabaseEnv handles missing, quoted, placeholder, and valid env values', () => {
+  assert.equal(normalizeEnvValue('  "https://abc.supabase.co"  '), 'https://abc.supabase.co');
+
+  const missing = evaluateSupabaseEnv(undefined, '');
+  assert.deepEqual(missing.diagnostic, {
+    hasUrl: false,
+    hasValidUrl: false,
+    hasPublishableKey: false,
+    isConfigured: false,
+  });
+
+  const placeholder = evaluateSupabaseEnv(
+    'https://YOUR-PROJECT-ID.supabase.co',
+    'YOUR_SUPABASE_PUBLISHABLE_KEY'
+  );
+  assert.equal(placeholder.diagnostic.isConfigured, false);
+
+  const valid = evaluateSupabaseEnv(
+    '"https://example-project.supabase.co"',
+    'sb_publishable_123456'
+  );
+  assert.deepEqual(valid.diagnostic, {
+    hasUrl: true,
+    hasValidUrl: true,
+    hasPublishableKey: true,
+    isConfigured: true,
+  });
+  assert.equal(valid.url, 'https://example-project.supabase.co');
+  assert.equal(valid.publishableKey, 'sb_publishable_123456');
 });

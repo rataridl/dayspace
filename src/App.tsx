@@ -263,6 +263,7 @@ export default function App() {
                 loading: auth.loading,
                 submitting: auth.submitting,
                 configured: auth.configured,
+                envDiagnostic: auth.envDiagnostic,
                 authError: auth.authError,
                 authNotice: auth.authNotice,
                 onSignIn: auth.signIn,
