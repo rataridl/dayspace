@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createInitialDayspaceState } from '../data/seed';
 import {
   CalendarDisplayMode,
@@ -22,64 +22,24 @@ import {
   clampDurationMinutes,
   getTodayDateKey,
 } from '../utils/productivity';
-
-const STORAGE_KEY = 'dayspace.workspace.v1';
-
-function loadInitialState(): DayspaceState {
-  if (typeof window === 'undefined') {
-    return createInitialDayspaceState();
-  }
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return createInitialDayspaceState();
-    }
-    const parsed = JSON.parse(raw) as Partial<DayspaceState>;
-    const fallback = createInitialDayspaceState();
-    const validCalendarMode =
-      parsed.calendarMode === 'month' ||
-      parsed.calendarMode === 'week' ||
-      parsed.calendarMode === 'agenda'
-        ? parsed.calendarMode
-        : fallback.calendarMode;
-
-    return {
-      profile: parsed.profile?.name !== undefined ? parsed.profile : fallback.profile,
-      tasks: Array.isArray(parsed.tasks) ? parsed.tasks : fallback.tasks,
-      habits: Array.isArray(parsed.habits) ? parsed.habits : fallback.habits,
-      events: Array.isArray(parsed.events) ? parsed.events : fallback.events,
-      journalEntries: Array.isArray(parsed.journalEntries)
-        ? parsed.journalEntries
-        : fallback.journalEntries,
-      transactions: Array.isArray(parsed.transactions)
-        ? parsed.transactions
-        : fallback.transactions,
-      savingsGoals: Array.isArray(parsed.savingsGoals)
-        ? parsed.savingsGoals
-        : fallback.savingsGoals,
-      pomodoroSettings: parsed.pomodoroSettings
-        ? { ...fallback.pomodoroSettings, ...parsed.pomodoroSettings }
-        : fallback.pomodoroSettings,
-      pomodoroSessions: Array.isArray(parsed.pomodoroSessions)
-        ? parsed.pomodoroSessions
-        : fallback.pomodoroSessions,
-      quoteOffset: typeof parsed.quoteOffset === 'number' ? parsed.quoteOffset : 0,
-      calendarMode: validCalendarMode,
-    };
-  } catch {
-    return createInitialDayspaceState();
-  }
-}
+import {
+  createEmptyDayspaceState,
+  loadDayspaceState,
+  saveDayspaceState,
+} from '../utils/storage';
 
 export function useDayspaceStore() {
-  const [state, setState] = useState<DayspaceState>(loadInitialState);
+  const [state, setState] = useState<DayspaceState>(() => loadDayspaceState());
+  const [storageError, setStorageError] = useState<string | null>(null);
+  const isInitialMountRef = useRef(true);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {
-      // Ignore storage quota errors gracefully
+    if (isInitialMountRef.current) {
+      isInitialMountRef.current = false;
+      return;
     }
+    const result = saveDayspaceState(state);
+    setStorageError(result.ok ? null : result.error || 'Unable to save locally.');
   }, [state]);
 
   const addTask = useCallback(
@@ -613,8 +573,17 @@ export function useDayspaceStore() {
     setState(fresh);
   }, []);
 
+  const importWorkspaceState = useCallback((nextState: DayspaceState) => {
+    setState(nextState);
+  }, []);
+
+  const clearAllData = useCallback(() => {
+    setState((prev) => createEmptyDayspaceState(prev.profile.name));
+  }, []);
+
   return {
     state,
+    storageError,
     addTask,
     updateTask,
     toggleTask,
@@ -643,5 +612,7 @@ export function useDayspaceStore() {
     cycleQuote,
     setCalendarMode,
     resetDemoData,
+    importWorkspaceState,
+    clearAllData,
   };
 }

@@ -23,6 +23,7 @@ import { formatTimerClock, getDailyQuote } from './utils/productivity';
 export default function App() {
   const {
     state,
+    storageError,
     addTask,
     updateTask,
     toggleTask,
@@ -51,6 +52,8 @@ export default function App() {
     cycleQuote,
     setCalendarMode,
     resetDemoData,
+    importWorkspaceState,
+    clearAllData,
   } = useDayspaceStore();
 
   const pomodoro = usePomodoroTimer({
@@ -241,9 +244,12 @@ export default function App() {
 
           {activeView === NavigationView.Settings && (
             <SettingsView
-              profile={state.profile}
+              workspaceState={state}
+              storageError={storageError}
               onSaveProfile={updateProfile}
               onResetDemoData={resetDemoData}
+              onImportWorkspaceState={importWorkspaceState}
+              onClearAllData={clearAllData}
             />
           )}
         </div>
