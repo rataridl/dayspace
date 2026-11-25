@@ -1,8 +1,13 @@
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from 'react';
+import type { User } from '@supabase/supabase-js';
 import {
   AlertTriangle,
   Check,
+  Cloud,
+  CloudOff,
   Download,
+  LogOut,
+  RefreshCw,
   RotateCcw,
   Trash2,
   Upload,
@@ -11,6 +16,7 @@ import {
 import { DayspaceState, UserProfile } from '../types/dayspace';
 import { getTodayDateKey } from '../utils/productivity';
 import { exportDayspaceBackup, parseDayspaceBackup } from '../utils/storage';
+import type { CloudSyncStatus } from '../utils/supabaseSync';
 
 interface SettingsViewProps {
   workspaceState: DayspaceState;
@@ -19,6 +25,31 @@ interface SettingsViewProps {
   onResetDemoData: () => void;
   onImportWorkspaceState: (nextState: DayspaceState) => void;
   onClearAllData: () => void;
+  supabaseAuth: {
+    user: User | null;
+    loading: boolean;
+    submitting: boolean;
+    configured: boolean;
+    authError: string | null;
+    authNotice: string | null;
+    onSignIn: (email: string, password: string) => Promise<boolean>;
+    onSignUp: (email: string, password: string) => Promise<boolean>;
+    onSignOut: () => Promise<void>;
+    onClearMessages: () => void;
+  };
+  cloudSync: {
+    status: CloudSyncStatus;
+    error: string | null;
+    lastSyncedAt: string | null;
+    onSyncNow: () => Promise<void>;
+  };
+}
+
+function formatSyncTime(iso: string | null): string {
+  if (!iso) return 'Not synced yet';
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return 'Recently';
+  return dt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
 export function SettingsView({
@@ -28,6 +59,8 @@ export function SettingsView({
   onResetDemoData,
   onImportWorkspaceState,
   onClearAllData,
+  supabaseAuth,
+  cloudSync,
 }: SettingsViewProps) {
   const { profile } = workspaceState;
 
@@ -41,6 +74,12 @@ export function SettingsView({
     kind: 'success' | 'error';
     message: string;
   } | null>(null);
+
+  // Supabase auth form state
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [authFormError, setAuthFormError] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -62,6 +101,27 @@ export function SettingsView({
     setNameError('');
     setSavedNotice(true);
     setTimeout(() => setSavedNotice(false), 2500);
+  };
+
+  const handleAuthSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setAuthFormError('Please enter a valid email address.');
+      return;
+    }
+    if (password.length < 6) {
+      setAuthFormError('Password must be at least 6 characters.');
+      return;
+    }
+    setAuthFormError('');
+    const ok =
+      authMode === 'signin'
+        ? await supabaseAuth.onSignIn(cleanEmail, password)
+        : await supabaseAuth.onSignUp(cleanEmail, password);
+    if (ok) {
+      setPassword('');
+    }
   };
 
   const handleExportBackup = () => {
@@ -134,7 +194,8 @@ export function SettingsView({
           Settings
         </h1>
         <p className="mt-1 text-sm text-[#58645B]">
-          Customize your personal greeting and manage your local workspace data.
+          Customize your personal greeting, optional cloud sync, and local
+          workspace data.
         </p>
       </header>
 
@@ -204,6 +265,222 @@ export function SettingsView({
             )}
           </div>
         </form>
+      </section>
+
+      {/* Optional Supabase Cloud Sync */}
+      <section className="rounded-2xl bg-white border border-[#E5E1D8] p-6 shadow-[0_2px_14px_rgba(28,36,30,0.03)]">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="font-serif text-xl font-medium text-[#1C241E]">
+              Cloud Sync (Optional)
+            </h2>
+            <p className="mt-1 text-sm text-[#58645B]">
+              Sign in with Supabase to sync your workspace across devices.
+              DAYSPACE always keeps working locally without an account.
+            </p>
+          </div>
+          {supabaseAuth.configured ? (
+            <Cloud className="w-5 h-5 text-[#5C7C66] shrink-0 mt-1" />
+          ) : (
+            <CloudOff className="w-5 h-5 text-[#7D8880] shrink-0 mt-1" />
+          )}
+        </div>
+
+        {!supabaseAuth.configured ? (
+          <div className="mt-4 rounded-xl bg-[#FBF9F4] border border-[#EAE6DC] p-4 text-xs text-[#58645B] leading-relaxed">
+            <p className="font-medium text-[#1C241E]">
+              Running in LocalStorage mode
+            </p>
+            <p className="mt-1">
+              Add <span className="font-mono text-[#1C241E]">VITE_SUPABASE_URL</span>{' '}
+              and{' '}
+              <span className="font-mono text-[#1C241E]">
+                VITE_SUPABASE_PUBLISHABLE_KEY
+              </span>{' '}
+              to your environment to enable optional account sign-in and cloud
+              sync.
+            </p>
+          </div>
+        ) : supabaseAuth.loading ? (
+          <p className="mt-4 text-xs text-[#58645B]">
+            Checking cloud session...
+          </p>
+        ) : supabaseAuth.user ? (
+          <div className="mt-4 space-y-4">
+            <div className="rounded-xl bg-[#FBF9F4] border border-[#EAE6DC] p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs text-[#58645B]">Signed in as</p>
+                <p className="text-sm font-medium text-[#1C241E] truncate">
+                  {supabaseAuth.user.email}
+                </p>
+                <p className="mt-1 text-xs text-[#5C7C66] font-mono tabular-nums">
+                  {cloudSync.status === 'syncing'
+                    ? 'Syncing workspace...'
+                    : cloudSync.status === 'error'
+                    ? 'Cloud sync paused (saved locally)'
+                    : `Synced · ${formatSyncTime(cloudSync.lastSyncedAt)}`}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => void cloudSync.onSyncNow()}
+                  disabled={cloudSync.status === 'syncing'}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#DDD8CD] bg-white text-xs font-medium text-[#1C241E] hover:bg-[#F3EFE6] disabled:opacity-60 transition-colors"
+                >
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 text-[#5C7C66] ${
+                      cloudSync.status === 'syncing' ? 'animate-spin' : ''
+                    }`}
+                  />
+                  <span>Sync now</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void supabaseAuth.onSignOut()}
+                  disabled={supabaseAuth.submitting}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#DDD8CD] bg-white text-xs font-medium text-[#4B574E] hover:bg-[#F3EFE6] transition-colors"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sign out</span>
+                </button>
+              </div>
+            </div>
+
+            {cloudSync.error && (
+              <p
+                role="alert"
+                className="rounded-xl border border-[#E7C2BC] bg-[#FBF0EE] px-3.5 py-2.5 text-xs text-[#9A3B30]"
+              >
+                Cloud sync note: {cloudSync.error}. Your changes remain safely
+                saved in LocalStorage.
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="mt-5">
+            <div
+              role="tablist"
+              aria-label="Account mode"
+              className="inline-flex p-1 rounded-xl bg-[#F5F2EA] border border-[#EAE6DC]"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={authMode === 'signin'}
+                onClick={() => {
+                  setAuthMode('signin');
+                  setAuthFormError('');
+                  supabaseAuth.onClearMessages();
+                }}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                  authMode === 'signin'
+                    ? 'bg-[#1E3F31] text-white'
+                    : 'text-[#4B574E] hover:text-[#1C241E]'
+                }`}
+              >
+                Sign in
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={authMode === 'signup'}
+                onClick={() => {
+                  setAuthMode('signup');
+                  setAuthFormError('');
+                  supabaseAuth.onClearMessages();
+                }}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                  authMode === 'signup'
+                    ? 'bg-[#1E3F31] text-white'
+                    : 'text-[#4B574E] hover:text-[#1C241E]'
+                }`}
+              >
+                Create account
+              </button>
+            </div>
+
+            <form onSubmit={handleAuthSubmit} className="mt-4 space-y-3.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <label
+                    htmlFor="supabase-auth-email"
+                    className="block text-xs font-medium text-[#1C241E] mb-1"
+                  >
+                    Email address
+                  </label>
+                  <input
+                    id="supabase-auth-email"
+                    type="email"
+                    autoComplete="email"
+                    value={email}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      if (authFormError) setAuthFormError('');
+                    }}
+                    placeholder="you@example.com"
+                    className="w-full rounded-xl border border-[#DDD8CD] bg-[#FBF9F4] px-3 py-2 text-sm text-[#1C241E] focus:border-[#1E3F31] focus:bg-white focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="supabase-auth-password"
+                    className="block text-xs font-medium text-[#1C241E] mb-1"
+                  >
+                    Password
+                  </label>
+                  <input
+                    id="supabase-auth-password"
+                    type="password"
+                    autoComplete={
+                      authMode === 'signin'
+                        ? 'current-password'
+                        : 'new-password'
+                    }
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      if (authFormError) setAuthFormError('');
+                    }}
+                    placeholder="At least 6 characters"
+                    className="w-full rounded-xl border border-[#DDD8CD] bg-[#FBF9F4] px-3 py-2 text-sm text-[#1C241E] focus:border-[#1E3F31] focus:bg-white focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {(authFormError || supabaseAuth.authError) && (
+                <p
+                  role="alert"
+                  className="rounded-xl border border-[#E7C2BC] bg-[#FBF0EE] px-3.5 py-2 text-xs text-[#9A3B30]"
+                >
+                  {authFormError || supabaseAuth.authError}
+                </p>
+              )}
+
+              {supabaseAuth.authNotice && (
+                <p
+                  role="status"
+                  className="rounded-xl border border-[#C6DEC9] bg-[#EDF3EE] px-3.5 py-2 text-xs text-[#1E3F31]"
+                >
+                  {supabaseAuth.authNotice}
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={supabaseAuth.submitting}
+                className="px-4 py-2.5 rounded-xl bg-[#1E3F31] text-white text-xs sm:text-sm font-medium hover:bg-[#152E24] disabled:opacity-60 transition-colors"
+              >
+                {supabaseAuth.submitting
+                  ? 'Please wait...'
+                  : authMode === 'signin'
+                  ? 'Sign in & sync'
+                  : 'Create account'}
+              </button>
+            </form>
+          </div>
+        )}
       </section>
 
       <section className="rounded-2xl bg-white border border-[#E5E1D8] p-6 shadow-[0_2px_14px_rgba(28,36,30,0.03)]">

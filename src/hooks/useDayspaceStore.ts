@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createInitialDayspaceState } from '../data/seed';
+import { supabase } from '../lib/supabase';
 import {
   CalendarDisplayMode,
   CalendarEvent,
@@ -27,12 +28,28 @@ import {
   loadDayspaceState,
   saveDayspaceState,
 } from '../utils/storage';
+import {
+  CloudSyncStatus,
+  fetchCloudWorkspace,
+  resolveInitialCloudSync,
+  saveCloudWorkspace,
+} from '../utils/supabaseSync';
 
-export function useDayspaceStore() {
+export function useDayspaceStore(cloudUserId?: string | null) {
   const [state, setState] = useState<DayspaceState>(() => loadDayspaceState());
   const [storageError, setStorageError] = useState<string | null>(null);
-  const isInitialMountRef = useRef(true);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<CloudSyncStatus>('local');
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
 
+  const isInitialMountRef = useRef(true);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  const hydratedCloudUserRef = useRef<string | null>(null);
+  const skipNextCloudSaveRef = useRef(false);
+
+  // Always persist state changes to LocalStorage immediately
   useEffect(() => {
     if (isInitialMountRef.current) {
       isInitialMountRef.current = false;
@@ -41,6 +58,117 @@ export function useDayspaceStore() {
     const result = saveDayspaceState(state);
     setStorageError(result.ok ? null : result.error || 'Unable to save locally.');
   }, [state]);
+
+  // Initial cloud sync when user signs in (never overwrites local data with empty cloud data)
+  useEffect(() => {
+    if (!cloudUserId || !supabase) {
+      hydratedCloudUserRef.current = null;
+      setCloudSyncStatus('local');
+      setCloudSyncError(null);
+      return;
+    }
+
+    if (hydratedCloudUserRef.current === cloudUserId) {
+      return;
+    }
+
+    let cancelled = false;
+    setCloudSyncStatus('syncing');
+    setCloudSyncError(null);
+
+    (async () => {
+      const fetchResult = await fetchCloudWorkspace(supabase, cloudUserId);
+      if (cancelled) return;
+
+      if (!fetchResult.ok) {
+        hydratedCloudUserRef.current = cloudUserId;
+        setCloudSyncStatus('error');
+        setCloudSyncError(
+          fetchResult.error || 'Unable to load cloud workspace.'
+        );
+        return;
+      }
+
+      const resolution = resolveInitialCloudSync(
+        stateRef.current,
+        fetchResult.data
+      );
+
+      if (resolution.shouldUploadLocal) {
+        const uploadResult = await saveCloudWorkspace(
+          supabase,
+          cloudUserId,
+          resolution.stateToUse
+        );
+        if (cancelled) return;
+        hydratedCloudUserRef.current = cloudUserId;
+        if (!uploadResult.ok) {
+          setCloudSyncStatus('error');
+          setCloudSyncError(
+            uploadResult.error || 'Unable to sync local workspace to cloud.'
+          );
+        } else {
+          setCloudSyncStatus('synced');
+          setLastSyncedAt(uploadResult.updatedAt ?? new Date().toISOString());
+        }
+      } else {
+        skipNextCloudSaveRef.current = true;
+        setState(resolution.stateToUse);
+        saveDayspaceState(resolution.stateToUse);
+        hydratedCloudUserRef.current = cloudUserId;
+        setCloudSyncStatus('synced');
+        setLastSyncedAt(fetchResult.updatedAt ?? new Date().toISOString());
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cloudUserId]);
+
+  // Debounced auto-save to Supabase whenever state changes while signed in
+  useEffect(() => {
+    if (!cloudUserId || !supabase) return;
+    if (hydratedCloudUserRef.current !== cloudUserId) return;
+    if (skipNextCloudSaveRef.current) {
+      skipNextCloudSaveRef.current = false;
+      return;
+    }
+
+    const client = supabase;
+    const timer = window.setTimeout(async () => {
+      setCloudSyncStatus('syncing');
+      const result = await saveCloudWorkspace(client, cloudUserId, state);
+      if (!result.ok) {
+        setCloudSyncStatus('error');
+        setCloudSyncError(result.error || 'Cloud sync failed.');
+      } else {
+        setCloudSyncStatus('synced');
+        setCloudSyncError(null);
+        setLastSyncedAt(result.updatedAt ?? new Date().toISOString());
+      }
+    }, 600);
+
+    return () => window.clearTimeout(timer);
+  }, [state, cloudUserId]);
+
+  const syncNow = useCallback(async () => {
+    if (!cloudUserId || !supabase) return;
+    setCloudSyncStatus('syncing');
+    setCloudSyncError(null);
+    const result = await saveCloudWorkspace(
+      supabase,
+      cloudUserId,
+      stateRef.current
+    );
+    if (!result.ok) {
+      setCloudSyncStatus('error');
+      setCloudSyncError(result.error || 'Cloud sync failed.');
+    } else {
+      setCloudSyncStatus('synced');
+      setLastSyncedAt(result.updatedAt ?? new Date().toISOString());
+    }
+  }, [cloudUserId]);
 
   const addTask = useCallback(
     (input: {
@@ -584,6 +712,10 @@ export function useDayspaceStore() {
   return {
     state,
     storageError,
+    cloudSyncStatus,
+    cloudSyncError,
+    lastSyncedAt,
+    syncNow,
     addTask,
     updateTask,
     toggleTask,

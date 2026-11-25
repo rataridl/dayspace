@@ -12,6 +12,7 @@ import { TasksView } from './components/TasksView';
 import { DAILY_QUOTES } from './data/seed';
 import { useDayspaceStore } from './hooks/useDayspaceStore';
 import { usePomodoroTimer } from './hooks/usePomodoroTimer';
+import { useSupabaseAuth } from './hooks/useSupabaseAuth';
 import {
   CalendarEvent,
   HabitItem,
@@ -21,9 +22,15 @@ import {
 import { formatTimerClock, getDailyQuote } from './utils/productivity';
 
 export default function App() {
+  const auth = useSupabaseAuth();
+
   const {
     state,
     storageError,
+    cloudSyncStatus,
+    cloudSyncError,
+    lastSyncedAt,
+    syncNow,
     addTask,
     updateTask,
     toggleTask,
@@ -54,7 +61,7 @@ export default function App() {
     resetDemoData,
     importWorkspaceState,
     clearAllData,
-  } = useDayspaceStore();
+  } = useDayspaceStore(auth.user?.id ?? null);
 
   const pomodoro = usePomodoroTimer({
     settings: state.pomodoroSettings,
@@ -251,6 +258,24 @@ export default function App() {
               onResetDemoData={resetDemoData}
               onImportWorkspaceState={importWorkspaceState}
               onClearAllData={clearAllData}
+              supabaseAuth={{
+                user: auth.user,
+                loading: auth.loading,
+                submitting: auth.submitting,
+                configured: auth.configured,
+                authError: auth.authError,
+                authNotice: auth.authNotice,
+                onSignIn: auth.signIn,
+                onSignUp: auth.signUp,
+                onSignOut: auth.signOut,
+                onClearMessages: auth.clearAuthMessages,
+              }}
+              cloudSync={{
+                status: cloudSyncStatus,
+                error: cloudSyncError,
+                lastSyncedAt,
+                onSyncNow: syncNow,
+              }}
             />
           )}
         </div>
