@@ -34,8 +34,17 @@ import {
 } from './wallets';
 
 export const DAYSPACE_STORAGE_KEY = 'dayspace.workspace.v1';
+export const DAYSPACE_LEGACY_MIGRATED_KEY = 'dayspace.legacy.migrated.v1';
 export const DAYSPACE_BACKUP_SCHEMA = 'dayspace-backup';
 export const DAYSPACE_BACKUP_VERSION = 1;
+
+export function getUserStorageKey(userId: string): string {
+  const cleanId = userId.trim();
+  if (!cleanId) {
+    throw new Error('User ID is required for namespaced workspace storage.');
+  }
+  return `${DAYSPACE_STORAGE_KEY}.user.${cleanId}`;
+}
 
 export interface StorageOperationResult {
   ok: boolean;
@@ -575,6 +584,143 @@ export function clearDayspaceStorage(
           ? err.message
           : 'Unable to clear LocalStorage.',
     };
+  }
+}
+
+export function loadUserDayspaceState(
+  userId: string,
+  storage?: Storage
+): DayspaceState | null {
+  const target = getBrowserStorage(storage);
+  if (!target || !userId.trim()) return null;
+
+  try {
+    const raw = target.getItem(getUserStorageKey(userId));
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed)) return null;
+    return sanitizeDayspaceState(parsed, createEmptyDayspaceState());
+  } catch {
+    return null;
+  }
+}
+
+export function saveUserDayspaceState(
+  userId: string,
+  state: DayspaceState,
+  storage?: Storage
+): StorageOperationResult {
+  const target = getBrowserStorage(storage);
+  if (!target) {
+    return { ok: false, error: 'LocalStorage is unavailable in this environment.' };
+  }
+  if (!userId.trim()) {
+    return { ok: false, error: 'Authenticated user ID is required.' };
+  }
+  try {
+    target.setItem(getUserStorageKey(userId), JSON.stringify(state));
+    return { ok: true };
+  } catch (err) {
+    if (isQuotaExceededError(err)) {
+      return {
+        ok: false,
+        error:
+          'Storage limit exceeded (QuotaExceededError). Remove one or more photos or export a backup to free up browser LocalStorage space.',
+      };
+    }
+    return {
+      ok: false,
+      error:
+        err instanceof Error
+          ? err.message
+          : 'Unable to save workspace data to LocalStorage.',
+    };
+  }
+}
+
+export function clearUserDayspaceStorage(
+  userId: string,
+  storage?: Storage
+): StorageOperationResult {
+  const target = getBrowserStorage(storage);
+  if (!target) {
+    return { ok: false, error: 'LocalStorage is unavailable in this environment.' };
+  }
+  if (!userId.trim()) {
+    return { ok: false, error: 'Authenticated user ID is required.' };
+  }
+  try {
+    target.removeItem(getUserStorageKey(userId));
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error
+          ? err.message
+          : 'Unable to clear user workspace from LocalStorage.',
+    };
+  }
+}
+
+export function isLegacyLocalMigrated(storage?: Storage): boolean {
+  const target = getBrowserStorage(storage);
+  if (!target) return false;
+  try {
+    return Boolean(target.getItem(DAYSPACE_LEGACY_MIGRATED_KEY));
+  } catch {
+    return false;
+  }
+}
+
+export function markLegacyLocalMigrated(
+  userId: string,
+  choice: 'imported' | 'fresh',
+  storage?: Storage
+): StorageOperationResult {
+  const target = getBrowserStorage(storage);
+  if (!target) {
+    return { ok: false, error: 'LocalStorage is unavailable in this environment.' };
+  }
+  try {
+    target.setItem(
+      DAYSPACE_LEGACY_MIGRATED_KEY,
+      JSON.stringify({
+        userId,
+        choice,
+        migratedAt: new Date().toISOString(),
+      })
+    );
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error
+          ? err.message
+          : 'Unable to record legacy migration status.',
+    };
+  }
+}
+
+/**
+ * Loads pre-auth legacy LocalStorage data (`dayspace.workspace.v1`) strictly
+ * if present and not yet claimed/migrated by an authenticated account.
+ * Returns null if clean or already handled (never fabricates seed data).
+ */
+export function loadLegacyLocalState(storage?: Storage): DayspaceState | null {
+  const target = getBrowserStorage(storage);
+  if (!target) return null;
+  if (isLegacyLocalMigrated(target)) return null;
+
+  try {
+    const raw = target.getItem(DAYSPACE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed)) return null;
+    return sanitizeDayspaceState(parsed, createEmptyDayspaceState());
+  } catch {
+    return null;
   }
 }
 

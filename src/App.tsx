@@ -1,6 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Loader2 } from 'lucide-react';
+import { AuthView } from './components/AuthView';
 import { CalendarView } from './components/CalendarView';
 import { DashboardView } from './components/DashboardView';
+import { DayspaceMark } from './components/DayspaceMark';
 import { FinanceView } from './components/FinanceView';
 import { HabitsView } from './components/HabitsView';
 import { JournalView } from './components/JournalView';
@@ -9,6 +12,7 @@ import { PomodoroView } from './components/PomodoroView';
 import { SettingsView } from './components/SettingsView';
 import { Sidebar } from './components/Sidebar';
 import { TasksView } from './components/TasksView';
+import { WorkspaceMigrationView } from './components/WorkspaceMigrationView';
 import { DAILY_QUOTES } from './data/seed';
 import { useDayspaceStore } from './hooks/useDayspaceStore';
 import { usePomodoroTimer } from './hooks/usePomodoroTimer';
@@ -19,10 +23,18 @@ import {
   NavigationView,
   TaskItem,
 } from './types/dayspace';
+import { deriveProfileNameFromUser } from './utils/authValidation';
 import { formatTimerClock, getDailyQuote } from './utils/productivity';
 
 export default function App() {
   const auth = useSupabaseAuth();
+  const activeUserId = auth.user?.id ?? null;
+  const defaultProfileName = auth.user
+    ? deriveProfileNameFromUser(
+        auth.user.email,
+        auth.user.user_metadata as Record<string, unknown> | null
+      )
+    : undefined;
 
   const {
     state,
@@ -30,6 +42,13 @@ export default function App() {
     cloudSyncStatus,
     cloudSyncError,
     lastSyncedAt,
+    hydrationPhase,
+    hydrationError,
+    migrationCandidate,
+    migrationSubmitting,
+    retryCloudHydration,
+    confirmImportMigration,
+    confirmStartFreshMigration,
     syncNow,
     addTask,
     updateTask,
@@ -65,7 +84,7 @@ export default function App() {
     resetDemoData,
     importWorkspaceState,
     clearAllData,
-  } = useDayspaceStore(auth.user?.id ?? null);
+  } = useDayspaceStore(activeUserId, defaultProfileName);
 
   const pomodoro = usePomodoroTimer({
     settings: state.pomodoroSettings,
@@ -86,6 +105,17 @@ export default function App() {
   const [modalInitialDate, setModalInitialDate] = useState<string | undefined>(
     undefined
   );
+
+  // Reset UI view & modals whenever the authenticated account changes or signs out
+  useEffect(() => {
+    setActiveView(NavigationView.Dashboard);
+    setMobileMenuOpen(false);
+    setQuickModal(null);
+    setEditingTask(null);
+    setEditingHabit(null);
+    setEditingEvent(null);
+    setModalInitialDate(undefined);
+  }, [activeUserId]);
 
   const openCreateModal = (kind: QuickModalKind, initialDate?: string) => {
     setEditingTask(null);
@@ -127,6 +157,64 @@ export default function App() {
     setModalInitialDate(undefined);
   };
 
+  // Gate 1: Checking initial auth session
+  if (auth.loading) {
+    return (
+      <div className="min-h-screen bg-[#FBF9F4] text-[#1C241E] flex items-center justify-center px-4">
+        <div className="text-center space-y-3">
+          <DayspaceMark className="w-10 h-10 mx-auto" />
+          <div className="inline-flex items-center gap-2 text-sm text-[#58645B]">
+            <Loader2 className="w-4 h-4 animate-spin text-[#1E3F31]" />
+            <span>Checking your session...</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Gate 2: Mandatory authentication landing page (or password recovery completion)
+  if (!auth.user || auth.isPasswordRecovery) {
+    return (
+      <AuthView
+        configured={auth.configured}
+        envDiagnostic={auth.envDiagnostic}
+        submitting={auth.submitting}
+        authError={auth.authError}
+        authNotice={auth.authNotice}
+        pendingVerificationEmail={auth.pendingVerificationEmail}
+        isPasswordRecovery={auth.isPasswordRecovery}
+        recoveryEmail={auth.user?.email ?? null}
+        onSignIn={auth.signIn}
+        onSignUp={auth.signUp}
+        onResendVerification={auth.resendVerificationEmail}
+        onRequestPasswordReset={auth.requestPasswordReset}
+        onUpdatePassword={auth.updatePassword}
+        onDismissRecovery={auth.dismissRecoveryMode}
+        onClearMessages={auth.clearAuthMessages}
+        onClearPendingVerification={auth.clearPendingVerification}
+      />
+    );
+  }
+
+  // Gate 3: Safe cloud hydration, explicit local migration prompt, or retry error
+  if (hydrationPhase !== 'ready') {
+    const visibleMigrationPhase =
+      hydrationPhase === 'idle' ? 'loading' : hydrationPhase;
+    return (
+      <WorkspaceMigrationView
+        userEmail={auth.user.email || 'Authenticated user'}
+        phase={visibleMigrationPhase}
+        error={hydrationError}
+        candidate={migrationCandidate}
+        submitting={migrationSubmitting}
+        onRetry={retryCloudHydration}
+        onConfirmImport={confirmImportMigration}
+        onConfirmStartFresh={confirmStartFreshMigration}
+        onSignOut={auth.signOut}
+      />
+    );
+  }
+
   const remainingTaskCount = state.tasks.filter((t) => !t.completed).length;
   const currentQuote = getDailyQuote(DAILY_QUOTES, new Date(), state.quoteOffset);
 
@@ -136,6 +224,7 @@ export default function App() {
         activeView={activeView}
         onNavigate={setActiveView}
         userName={state.profile.name}
+        userEmail={auth.user.email}
         taskCountRemaining={remainingTaskCount}
         activeTimerLabel={
           pomodoro.isRunning
@@ -270,16 +359,8 @@ export default function App() {
               onClearAllData={clearAllData}
               supabaseAuth={{
                 user: auth.user,
-                loading: auth.loading,
                 submitting: auth.submitting,
-                configured: auth.configured,
-                envDiagnostic: auth.envDiagnostic,
-                authError: auth.authError,
-                authNotice: auth.authNotice,
-                onSignIn: auth.signIn,
-                onSignUp: auth.signUp,
                 onSignOut: auth.signOut,
-                onClearMessages: auth.clearAuthMessages,
               }}
               cloudSync={{
                 status: cloudSyncStatus,

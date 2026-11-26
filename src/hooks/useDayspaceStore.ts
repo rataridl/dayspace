@@ -30,13 +30,17 @@ import {
 } from '../utils/productivity';
 import {
   createEmptyDayspaceState,
-  loadDayspaceState,
-  saveDayspaceState,
+  loadLegacyLocalState,
+  loadUserDayspaceState,
+  markLegacyLocalMigrated,
+  saveUserDayspaceState,
 } from '../utils/storage';
 import {
+  CloudHydrationPhase,
   CloudSyncStatus,
   fetchCloudWorkspace,
-  resolveInitialCloudSync,
+  MigrationCandidate,
+  resolveAuthenticatedWorkspaceLoad,
   saveCloudWorkspace,
 } from '../utils/supabaseSync';
 import {
@@ -47,100 +51,250 @@ import {
   WALLET_TYPE_META,
 } from '../utils/wallets';
 
-export function useDayspaceStore(cloudUserId?: string | null) {
-  const [state, setState] = useState<DayspaceState>(() => loadDayspaceState());
+export function useDayspaceStore(
+  cloudUserId?: string | null,
+  defaultProfileName?: string
+) {
+  const [state, setState] = useState<DayspaceState>(() =>
+    createEmptyDayspaceState(defaultProfileName)
+  );
   const [storageError, setStorageError] = useState<string | null>(null);
   const [cloudSyncStatus, setCloudSyncStatus] = useState<CloudSyncStatus>('local');
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
 
-  const isInitialMountRef = useRef(true);
+  const [hydrationPhase, setHydrationPhase] = useState<CloudHydrationPhase>(
+    cloudUserId ? 'loading' : 'idle'
+  );
+  const [hydrationError, setHydrationError] = useState<string | null>(null);
+  const [migrationCandidate, setMigrationCandidate] =
+    useState<MigrationCandidate | null>(null);
+  const [migrationSubmitting, setMigrationSubmitting] = useState(false);
+  const [retryCounter, setRetryCounter] = useState(0);
+
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  const activeUserRef = useRef<string | null>(cloudUserId ?? null);
+  activeUserRef.current = cloudUserId ?? null;
 
   const hydratedCloudUserRef = useRef<string | null>(null);
   const skipNextCloudSaveRef = useRef(false);
 
-  // Always persist state changes to LocalStorage immediately
+  // Persist workspace changes ONLY to the active authenticated user's namespaced LocalStorage key
   useEffect(() => {
-    if (isInitialMountRef.current) {
-      isInitialMountRef.current = false;
-      return;
-    }
-    const result = saveDayspaceState(state);
-    setStorageError(result.ok ? null : result.error || 'Unable to save locally.');
-  }, [state]);
+    if (!cloudUserId || hydrationPhase !== 'ready') return;
+    if (hydratedCloudUserRef.current !== cloudUserId) return;
 
-  // Initial cloud sync when user signs in (never overwrites local data with empty cloud data)
+    const result = saveUserDayspaceState(cloudUserId, state);
+    setStorageError(result.ok ? null : result.error || 'Unable to save locally.');
+  }, [state, cloudUserId, hydrationPhase]);
+
+  // Hydrate authenticated user workspace from Supabase & user-isolated LocalStorage
   useEffect(() => {
     if (!cloudUserId || !supabase) {
       hydratedCloudUserRef.current = null;
+      skipNextCloudSaveRef.current = false;
+      setState(createEmptyDayspaceState());
+      setStorageError(null);
       setCloudSyncStatus('local');
       setCloudSyncError(null);
-      return;
-    }
-
-    if (hydratedCloudUserRef.current === cloudUserId) {
+      setLastSyncedAt(null);
+      setHydrationPhase('idle');
+      setHydrationError(null);
+      setMigrationCandidate(null);
+      setMigrationSubmitting(false);
       return;
     }
 
     let cancelled = false;
+
+    // Immediately clear previous user's in-memory workspace on user switch / login
+    if (hydratedCloudUserRef.current !== cloudUserId) {
+      hydratedCloudUserRef.current = null;
+      setState(createEmptyDayspaceState(defaultProfileName));
+      setStorageError(null);
+      setLastSyncedAt(null);
+    }
+
+    setHydrationPhase('loading');
+    setHydrationError(null);
+    setMigrationCandidate(null);
     setCloudSyncStatus('syncing');
     setCloudSyncError(null);
 
+    const client = supabase;
+    const fallbackName = defaultProfileName?.trim() || 'Personal Space';
+
     (async () => {
-      const fetchResult = await fetchCloudWorkspace(supabase, cloudUserId);
+      const fetchResult = await fetchCloudWorkspace(client, cloudUserId);
       if (cancelled) return;
 
-      if (!fetchResult.ok) {
-        hydratedCloudUserRef.current = cloudUserId;
+      const userLocalState = loadUserDayspaceState(cloudUserId);
+      const legacyLocalState = loadLegacyLocalState();
+
+      const resolution = resolveAuthenticatedWorkspaceLoad({
+        cloudResult: fetchResult,
+        userLocalState,
+        legacyLocalState,
+        defaultName: fallbackName,
+      });
+
+      if (resolution.phase === 'error') {
+        hydratedCloudUserRef.current = null;
         setCloudSyncStatus('error');
-        setCloudSyncError(
-          fetchResult.error || 'Unable to load cloud workspace.'
-        );
+        setCloudSyncError(resolution.error);
+        setHydrationError(resolution.error);
+        setHydrationPhase('error');
         return;
       }
 
-      const resolution = resolveInitialCloudSync(
-        stateRef.current,
-        fetchResult.data
+      if (resolution.phase === 'needs-migration-choice') {
+        hydratedCloudUserRef.current = null;
+        setMigrationCandidate({
+          source: resolution.candidateSource,
+          state: resolution.candidateState,
+        });
+        setCloudSyncStatus('local');
+        setHydrationPhase('needs-migration-choice');
+        return;
+      }
+
+      skipNextCloudSaveRef.current = true;
+      hydratedCloudUserRef.current = cloudUserId;
+      setState(resolution.state);
+      const localSave = saveUserDayspaceState(cloudUserId, resolution.state);
+      setStorageError(
+        localSave.ok ? null : localSave.error || 'Unable to save locally.'
       );
 
-      if (resolution.shouldUploadLocal) {
-        const uploadResult = await saveCloudWorkspace(
-          supabase,
+      if (resolution.shouldSyncInitialToCloud) {
+        const initialSave = await saveCloudWorkspace(
+          client,
           cloudUserId,
-          resolution.stateToUse
+          resolution.state
         );
         if (cancelled) return;
-        hydratedCloudUserRef.current = cloudUserId;
-        if (!uploadResult.ok) {
+        if (!initialSave.ok) {
           setCloudSyncStatus('error');
           setCloudSyncError(
-            uploadResult.error || 'Unable to sync local workspace to cloud.'
+            initialSave.error || 'Unable to initialize cloud workspace.'
           );
         } else {
           setCloudSyncStatus('synced');
-          setLastSyncedAt(uploadResult.updatedAt ?? new Date().toISOString());
+          setLastSyncedAt(initialSave.updatedAt ?? new Date().toISOString());
         }
       } else {
-        skipNextCloudSaveRef.current = true;
-        setState(resolution.stateToUse);
-        saveDayspaceState(resolution.stateToUse);
-        hydratedCloudUserRef.current = cloudUserId;
         setCloudSyncStatus('synced');
-        setLastSyncedAt(fetchResult.updatedAt ?? new Date().toISOString());
+        setLastSyncedAt(
+          resolution.lastSyncedAt ?? new Date().toISOString()
+        );
       }
+
+      setHydrationPhase('ready');
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [cloudUserId]);
+  }, [cloudUserId, defaultProfileName, retryCounter]);
 
-  // Debounced auto-save to Supabase whenever state changes while signed in
+  const retryCloudHydration = useCallback(() => {
+    setRetryCounter((c) => c + 1);
+  }, []);
+
+  const confirmImportMigration = useCallback(async () => {
+    if (!cloudUserId || !supabase || !migrationCandidate) return false;
+    setMigrationSubmitting(true);
+    setHydrationError(null);
+
+    try {
+      const candidateState = migrationCandidate.state;
+      const saveResult = await saveCloudWorkspace(
+        supabase,
+        cloudUserId,
+        candidateState
+      );
+      if (!saveResult.ok) {
+        setHydrationError(
+          saveResult.error ||
+            'Could not save your local workspace to the cloud. Nothing was overwritten — please try again.'
+        );
+        setCloudSyncStatus('error');
+        setCloudSyncError(saveResult.error || 'Migration failed.');
+        return false;
+      }
+
+      const localResult = saveUserDayspaceState(cloudUserId, candidateState);
+      setStorageError(
+        localResult.ok ? null : localResult.error || 'Unable to save locally.'
+      );
+      if (migrationCandidate.source === 'legacy-local') {
+        markLegacyLocalMigrated(cloudUserId, 'imported');
+      }
+
+      skipNextCloudSaveRef.current = true;
+      hydratedCloudUserRef.current = cloudUserId;
+      setState(candidateState);
+      setMigrationCandidate(null);
+      setCloudSyncStatus('synced');
+      setCloudSyncError(null);
+      setLastSyncedAt(saveResult.updatedAt ?? new Date().toISOString());
+      setHydrationPhase('ready');
+      return true;
+    } finally {
+      setMigrationSubmitting(false);
+    }
+  }, [cloudUserId, migrationCandidate]);
+
+  const confirmStartFreshMigration = useCallback(async () => {
+    if (!cloudUserId || !supabase) return false;
+    setMigrationSubmitting(true);
+    setHydrationError(null);
+
+    try {
+      const freshState = createEmptyDayspaceState(defaultProfileName);
+      const saveResult = await saveCloudWorkspace(
+        supabase,
+        cloudUserId,
+        freshState
+      );
+      if (!saveResult.ok) {
+        setHydrationError(
+          saveResult.error ||
+            'Could not initialize your fresh workspace in the cloud. Please try again.'
+        );
+        setCloudSyncStatus('error');
+        setCloudSyncError(saveResult.error || 'Initialization failed.');
+        return false;
+      }
+
+      const localResult = saveUserDayspaceState(cloudUserId, freshState);
+      setStorageError(
+        localResult.ok ? null : localResult.error || 'Unable to save locally.'
+      );
+      if (migrationCandidate?.source === 'legacy-local') {
+        markLegacyLocalMigrated(cloudUserId, 'fresh');
+      }
+
+      skipNextCloudSaveRef.current = true;
+      hydratedCloudUserRef.current = cloudUserId;
+      setState(freshState);
+      setMigrationCandidate(null);
+      setCloudSyncStatus('synced');
+      setCloudSyncError(null);
+      setLastSyncedAt(saveResult.updatedAt ?? new Date().toISOString());
+      setHydrationPhase('ready');
+      return true;
+    } finally {
+      setMigrationSubmitting(false);
+    }
+  }, [cloudUserId, defaultProfileName, migrationCandidate]);
+
+  // Debounced auto-save to Supabase whenever state changes while signed in & hydrated
   useEffect(() => {
     if (!cloudUserId || !supabase) return;
+    if (hydrationPhase !== 'ready') return;
     if (hydratedCloudUserRef.current !== cloudUserId) return;
     if (skipNextCloudSaveRef.current) {
       skipNextCloudSaveRef.current = false;
@@ -149,8 +303,10 @@ export function useDayspaceStore(cloudUserId?: string | null) {
 
     const client = supabase;
     const timer = window.setTimeout(async () => {
+      if (activeUserRef.current !== cloudUserId) return;
       setCloudSyncStatus('syncing');
       const result = await saveCloudWorkspace(client, cloudUserId, state);
+      if (activeUserRef.current !== cloudUserId) return;
       if (!result.ok) {
         setCloudSyncStatus('error');
         setCloudSyncError(result.error || 'Cloud sync failed.');
@@ -162,7 +318,7 @@ export function useDayspaceStore(cloudUserId?: string | null) {
     }, 600);
 
     return () => window.clearTimeout(timer);
-  }, [state, cloudUserId]);
+  }, [state, cloudUserId, hydrationPhase]);
 
   const syncNow = useCallback(async () => {
     if (!cloudUserId || !supabase) return;
@@ -427,11 +583,18 @@ export function useDayspaceStore(cloudUserId?: string | null) {
         createdAt: nowIso,
         updatedAt: nowIso,
       };
+      const activeUserId = activeUserRef.current;
+      if (!activeUserId) {
+        return {
+          ok: false,
+          error: 'Please sign in to save journal entries.',
+        };
+      }
       const nextState: DayspaceState = {
         ...stateRef.current,
         journalEntries: [newEntry, ...stateRef.current.journalEntries],
       };
-      const saveResult = saveDayspaceState(nextState);
+      const saveResult = saveUserDayspaceState(activeUserId, nextState);
       if (!saveResult.ok) {
         const message =
           saveResult.error ||
@@ -459,6 +622,13 @@ export function useDayspaceStore(cloudUserId?: string | null) {
         photos?: JournalPhoto[];
       }
     ): { ok: boolean; entryId?: string; error?: string } => {
+      const activeUserId = activeUserRef.current;
+      if (!activeUserId) {
+        return {
+          ok: false,
+          error: 'Please sign in to update journal entries.',
+        };
+      }
       const nowIso = new Date().toISOString();
       const photos = sanitizeJournalPhotos(updates.photos);
       const nextState: DayspaceState = {
@@ -479,7 +649,7 @@ export function useDayspaceStore(cloudUserId?: string | null) {
             : entry
         ),
       };
-      const saveResult = saveDayspaceState(nextState);
+      const saveResult = saveUserDayspaceState(activeUserId, nextState);
       if (!saveResult.ok) {
         const message =
           saveResult.error ||
@@ -889,6 +1059,13 @@ export function useDayspaceStore(cloudUserId?: string | null) {
     cloudSyncStatus,
     cloudSyncError,
     lastSyncedAt,
+    hydrationPhase,
+    hydrationError,
+    migrationCandidate,
+    migrationSubmitting,
+    retryCloudHydration,
+    confirmImportMigration,
+    confirmStartFreshMigration,
     syncNow,
     addTask,
     updateTask,

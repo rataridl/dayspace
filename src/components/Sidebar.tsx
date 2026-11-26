@@ -18,6 +18,7 @@ interface SidebarProps {
   activeView: NavigationView;
   onNavigate: (view: NavigationView) => void;
   userName: string;
+  userEmail?: string | null;
   taskCountRemaining: number;
   activeTimerLabel?: string;
   mobileOpen: boolean;
@@ -44,6 +45,7 @@ export function Sidebar({
   activeView,
   onNavigate,
   userName,
+  userEmail,
   taskCountRemaining,
   activeTimerLabel,
   mobileOpen,
@@ -136,7 +138,7 @@ export function Sidebar({
             {userName.trim() || 'Personal Space'}
           </span>
           <span className="block text-xs text-[#58645B] truncate">
-            Personalize workspace
+            {userEmail || 'Personalize workspace'}
           </span>
         </span>
       </button>

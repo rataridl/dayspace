@@ -4,16 +4,15 @@ import {
   AlertTriangle,
   Check,
   Cloud,
-  CloudOff,
   Download,
   LogOut,
   RefreshCw,
   RotateCcw,
+  ShieldCheck,
   Trash2,
   Upload,
   X,
 } from 'lucide-react';
-import type { SupabaseEnvDiagnostic } from '../lib/supabase';
 import { DayspaceState, UserProfile } from '../types/dayspace';
 import { getTodayDateKey } from '../utils/productivity';
 import { exportDayspaceBackup, parseDayspaceBackup } from '../utils/storage';
@@ -27,17 +26,9 @@ interface SettingsViewProps {
   onImportWorkspaceState: (nextState: DayspaceState) => void;
   onClearAllData: () => void;
   supabaseAuth: {
-    user: User | null;
-    loading: boolean;
+    user: User;
     submitting: boolean;
-    configured: boolean;
-    envDiagnostic: SupabaseEnvDiagnostic;
-    authError: string | null;
-    authNotice: string | null;
-    onSignIn: (email: string, password: string) => Promise<boolean>;
-    onSignUp: (email: string, password: string) => Promise<boolean>;
     onSignOut: () => Promise<void>;
-    onClearMessages: () => void;
   };
   cloudSync: {
     status: CloudSyncStatus;
@@ -51,7 +42,12 @@ function formatSyncTime(iso: string | null): string {
   if (!iso) return 'Not synced yet';
   const dt = new Date(iso);
   if (Number.isNaN(dt.getTime())) return 'Recently';
-  return dt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return dt.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 export function SettingsView({
@@ -71,17 +67,12 @@ export function SettingsView({
   const [savedNotice, setSavedNotice] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [clearModalOpen, setClearModalOpen] = useState(false);
+  const [logoutModalOpen, setLogoutModalOpen] = useState(false);
   const [nameError, setNameError] = useState('');
   const [backupNotice, setBackupNotice] = useState<{
     kind: 'success' | 'error';
     message: string;
   } | null>(null);
-
-  // Supabase auth form state
-  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [authFormError, setAuthFormError] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -103,27 +94,6 @@ export function SettingsView({
     setNameError('');
     setSavedNotice(true);
     setTimeout(() => setSavedNotice(false), 2500);
-  };
-
-  const handleAuthSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    const cleanEmail = email.trim();
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      setAuthFormError('Please enter a valid email address.');
-      return;
-    }
-    if (password.length < 6) {
-      setAuthFormError('Password must be at least 6 characters.');
-      return;
-    }
-    setAuthFormError('');
-    const ok =
-      authMode === 'signin'
-        ? await supabaseAuth.onSignIn(cleanEmail, password)
-        : await supabaseAuth.onSignUp(cleanEmail, password);
-    if (ok) {
-      setPassword('');
-    }
   };
 
   const handleExportBackup = () => {
@@ -169,7 +139,7 @@ export function SettingsView({
       setConfirmReset(false);
       setBackupNotice({
         kind: 'success',
-        message: 'Workspace data imported and saved locally.',
+        message: 'Workspace data imported and saved to your account.',
       });
     } catch {
       setBackupNotice({
@@ -185,8 +155,13 @@ export function SettingsView({
     setConfirmReset(false);
     setBackupNotice({
       kind: 'success',
-      message: 'All workspace data has been cleared.',
+      message: 'All workspace data has been cleared for this account.',
     });
+  };
+
+  const handleConfirmLogout = async () => {
+    setLogoutModalOpen(false);
+    await supabaseAuth.onSignOut();
   };
 
   return (
@@ -196,11 +171,87 @@ export function SettingsView({
           Settings
         </h1>
         <p className="mt-1 text-sm text-[#58645B]">
-          Customize your personal greeting, optional cloud sync, and local
-          workspace data.
+          Customize your personal greeting, manage your account &amp; cloud
+          sync, and export workspace backups.
         </p>
       </header>
 
+      {/* Account & Cloud Sync Section */}
+      <section className="rounded-2xl bg-white border border-[#E5E1D8] p-6 shadow-[0_2px_14px_rgba(28,36,30,0.03)]">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="font-serif text-xl font-medium text-[#1C241E]">
+              Account &amp; Cloud Sync
+            </h2>
+            <p className="mt-1 text-sm text-[#58645B]">
+              Your DAYSPACE workspace is private to your signed-in account and
+              synced with row-level protection.
+            </p>
+          </div>
+          <Cloud className="w-5 h-5 text-[#5C7C66] shrink-0 mt-1" />
+        </div>
+
+        <div className="mt-4 space-y-4">
+          <div className="rounded-xl bg-[#FBF9F4] border border-[#EAE6DC] p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="min-w-0 space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-[#58645B]">Signed in as</span>
+                <span className="inline-flex items-center gap-1 rounded-md bg-[#EDF3EE] px-2 py-0.5 text-[11px] font-medium text-[#1E3F31]">
+                  <ShieldCheck className="w-3 h-3" />
+                  Verified account
+                </span>
+              </div>
+              <p className="text-sm font-medium text-[#1C241E] truncate">
+                {supabaseAuth.user.email || 'Authenticated user'}
+              </p>
+              <p className="text-xs text-[#5C7C66] font-mono tabular-nums">
+                {cloudSync.status === 'syncing'
+                  ? 'Syncing workspace...'
+                  : cloudSync.status === 'error'
+                  ? 'Sync attention needed (saved locally)'
+                  : `Last synced · ${formatSyncTime(cloudSync.lastSyncedAt)}`}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => void cloudSync.onSyncNow()}
+                disabled={cloudSync.status === 'syncing' || supabaseAuth.submitting}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#DDD8CD] bg-white text-xs font-medium text-[#1C241E] hover:bg-[#F3EFE6] disabled:opacity-60 transition-colors"
+              >
+                <RefreshCw
+                  className={`w-3.5 h-3.5 text-[#5C7C66] ${
+                    cloudSync.status === 'syncing' ? 'animate-spin' : ''
+                  }`}
+                />
+                <span>Sync now</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setLogoutModalOpen(true)}
+                disabled={supabaseAuth.submitting}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#E7C2BC] bg-[#FBF0EE] text-xs font-medium text-[#9A3B30] hover:bg-[#F6E1DD] disabled:opacity-60 transition-colors"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Log out</span>
+              </button>
+            </div>
+          </div>
+
+          {cloudSync.error && (
+            <p
+              role="alert"
+              className="rounded-xl border border-[#E7C2BC] bg-[#FBF0EE] px-3.5 py-2.5 text-xs text-[#9A3B30]"
+            >
+              Cloud sync note: {cloudSync.error}. Your changes remain safely
+              cached in your account&apos;s local storage.
+            </p>
+          )}
+        </div>
+      </section>
+
+      {/* Personalization */}
       <section className="rounded-2xl bg-white border border-[#E5E1D8] p-6 shadow-[0_2px_14px_rgba(28,36,30,0.03)]">
         <h2 className="font-serif text-xl font-medium text-[#1C241E]">
           Personalization
@@ -269,250 +320,14 @@ export function SettingsView({
         </form>
       </section>
 
-      {/* Optional Supabase Cloud Sync */}
-      <section className="rounded-2xl bg-white border border-[#E5E1D8] p-6 shadow-[0_2px_14px_rgba(28,36,30,0.03)]">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 className="font-serif text-xl font-medium text-[#1C241E]">
-              Cloud Sync (Optional)
-            </h2>
-            <p className="mt-1 text-sm text-[#58645B]">
-              Sign in with Supabase to sync your workspace across devices.
-              DAYSPACE always keeps working locally without an account.
-            </p>
-          </div>
-          {supabaseAuth.configured ? (
-            <Cloud className="w-5 h-5 text-[#5C7C66] shrink-0 mt-1" />
-          ) : (
-            <CloudOff className="w-5 h-5 text-[#7D8880] shrink-0 mt-1" />
-          )}
-        </div>
-
-        {!supabaseAuth.configured ? (
-          <div className="mt-4 rounded-xl bg-[#FBF9F4] border border-[#EAE6DC] p-4 text-xs text-[#58645B] leading-relaxed">
-            <p className="font-medium text-[#1C241E]">
-              Running in LocalStorage mode
-            </p>
-            <p className="mt-1">
-              Add <span className="font-mono text-[#1C241E]">VITE_SUPABASE_URL</span>{' '}
-              and{' '}
-              <span className="font-mono text-[#1C241E]">
-                VITE_SUPABASE_PUBLISHABLE_KEY
-              </span>{' '}
-              to your environment to enable optional account sign-in and cloud
-              sync.
-            </p>
-            <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] text-[#4B574E]">
-              <span>
-                VITE_SUPABASE_URL:{' '}
-                <strong className="text-[#1C241E]">
-                  {String(supabaseAuth.envDiagnostic.hasUrl)}
-                </strong>
-              </span>
-              <span>
-                VITE_SUPABASE_PUBLISHABLE_KEY:{' '}
-                <strong className="text-[#1C241E]">
-                  {String(supabaseAuth.envDiagnostic.hasPublishableKey)}
-                </strong>
-              </span>
-              {supabaseAuth.envDiagnostic.hasUrl &&
-                !supabaseAuth.envDiagnostic.hasValidUrl && (
-                  <span>
-                    Valid URL format:{' '}
-                    <strong className="text-[#9A3B30]">false</strong>
-                  </span>
-                )}
-            </div>
-          </div>
-        ) : supabaseAuth.loading ? (
-          <p className="mt-4 text-xs text-[#58645B]">
-            Checking cloud session...
-          </p>
-        ) : supabaseAuth.user ? (
-          <div className="mt-4 space-y-4">
-            <div className="rounded-xl bg-[#FBF9F4] border border-[#EAE6DC] p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-xs text-[#58645B]">Signed in as</p>
-                <p className="text-sm font-medium text-[#1C241E] truncate">
-                  {supabaseAuth.user.email}
-                </p>
-                <p className="mt-1 text-xs text-[#5C7C66] font-mono tabular-nums">
-                  {cloudSync.status === 'syncing'
-                    ? 'Syncing workspace...'
-                    : cloudSync.status === 'error'
-                    ? 'Cloud sync paused (saved locally)'
-                    : `Synced · ${formatSyncTime(cloudSync.lastSyncedAt)}`}
-                </p>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => void cloudSync.onSyncNow()}
-                  disabled={cloudSync.status === 'syncing'}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#DDD8CD] bg-white text-xs font-medium text-[#1C241E] hover:bg-[#F3EFE6] disabled:opacity-60 transition-colors"
-                >
-                  <RefreshCw
-                    className={`w-3.5 h-3.5 text-[#5C7C66] ${
-                      cloudSync.status === 'syncing' ? 'animate-spin' : ''
-                    }`}
-                  />
-                  <span>Sync now</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void supabaseAuth.onSignOut()}
-                  disabled={supabaseAuth.submitting}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#DDD8CD] bg-white text-xs font-medium text-[#4B574E] hover:bg-[#F3EFE6] transition-colors"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span>Sign out</span>
-                </button>
-              </div>
-            </div>
-
-            {cloudSync.error && (
-              <p
-                role="alert"
-                className="rounded-xl border border-[#E7C2BC] bg-[#FBF0EE] px-3.5 py-2.5 text-xs text-[#9A3B30]"
-              >
-                Cloud sync note: {cloudSync.error}. Your changes remain safely
-                saved in LocalStorage.
-              </p>
-            )}
-          </div>
-        ) : (
-          <div className="mt-5">
-            <div
-              role="tablist"
-              aria-label="Account mode"
-              className="inline-flex p-1 rounded-xl bg-[#F5F2EA] border border-[#EAE6DC]"
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={authMode === 'signin'}
-                onClick={() => {
-                  setAuthMode('signin');
-                  setAuthFormError('');
-                  supabaseAuth.onClearMessages();
-                }}
-                className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  authMode === 'signin'
-                    ? 'bg-[#1E3F31] text-white'
-                    : 'text-[#4B574E] hover:text-[#1C241E]'
-                }`}
-              >
-                Sign in
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={authMode === 'signup'}
-                onClick={() => {
-                  setAuthMode('signup');
-                  setAuthFormError('');
-                  supabaseAuth.onClearMessages();
-                }}
-                className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  authMode === 'signup'
-                    ? 'bg-[#1E3F31] text-white'
-                    : 'text-[#4B574E] hover:text-[#1C241E]'
-                }`}
-              >
-                Create account
-              </button>
-            </div>
-
-            <form onSubmit={handleAuthSubmit} className="mt-4 space-y-3.5">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                <div>
-                  <label
-                    htmlFor="supabase-auth-email"
-                    className="block text-xs font-medium text-[#1C241E] mb-1"
-                  >
-                    Email address
-                  </label>
-                  <input
-                    id="supabase-auth-email"
-                    type="email"
-                    autoComplete="email"
-                    value={email}
-                    onChange={(e) => {
-                      setEmail(e.target.value);
-                      if (authFormError) setAuthFormError('');
-                    }}
-                    placeholder="you@example.com"
-                    className="w-full rounded-xl border border-[#DDD8CD] bg-[#FBF9F4] px-3 py-2 text-sm text-[#1C241E] focus:border-[#1E3F31] focus:bg-white focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label
-                    htmlFor="supabase-auth-password"
-                    className="block text-xs font-medium text-[#1C241E] mb-1"
-                  >
-                    Password
-                  </label>
-                  <input
-                    id="supabase-auth-password"
-                    type="password"
-                    autoComplete={
-                      authMode === 'signin'
-                        ? 'current-password'
-                        : 'new-password'
-                    }
-                    value={password}
-                    onChange={(e) => {
-                      setPassword(e.target.value);
-                      if (authFormError) setAuthFormError('');
-                    }}
-                    placeholder="At least 6 characters"
-                    className="w-full rounded-xl border border-[#DDD8CD] bg-[#FBF9F4] px-3 py-2 text-sm text-[#1C241E] focus:border-[#1E3F31] focus:bg-white focus:outline-none"
-                  />
-                </div>
-              </div>
-
-              {(authFormError || supabaseAuth.authError) && (
-                <p
-                  role="alert"
-                  className="rounded-xl border border-[#E7C2BC] bg-[#FBF0EE] px-3.5 py-2 text-xs text-[#9A3B30]"
-                >
-                  {authFormError || supabaseAuth.authError}
-                </p>
-              )}
-
-              {supabaseAuth.authNotice && (
-                <p
-                  role="status"
-                  className="rounded-xl border border-[#C6DEC9] bg-[#EDF3EE] px-3.5 py-2 text-xs text-[#1E3F31]"
-                >
-                  {supabaseAuth.authNotice}
-                </p>
-              )}
-
-              <button
-                type="submit"
-                disabled={supabaseAuth.submitting}
-                className="px-4 py-2.5 rounded-xl bg-[#1E3F31] text-white text-xs sm:text-sm font-medium hover:bg-[#152E24] disabled:opacity-60 transition-colors"
-              >
-                {supabaseAuth.submitting
-                  ? 'Please wait...'
-                  : authMode === 'signin'
-                  ? 'Sign in & sync'
-                  : 'Create account'}
-              </button>
-            </form>
-          </div>
-        )}
-      </section>
-
+      {/* Workspace Data & Backups */}
       <section className="rounded-2xl bg-white border border-[#E5E1D8] p-6 shadow-[0_2px_14px_rgba(28,36,30,0.03)]">
         <h2 className="font-serif text-xl font-medium text-[#1C241E]">
           Workspace data &amp; backups
         </h2>
         <p className="mt-1 text-sm text-[#58645B]">
           All tasks, habits, events, journal entries, finances, and focus
-          sessions are saved automatically in your browser.
+          sessions are saved to your account and cached locally per user.
         </p>
 
         <p className="mt-3 text-xs text-[#6A786D]">
@@ -589,7 +404,7 @@ export function SettingsView({
               className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[#DDD8CD] bg-white text-sm font-medium text-[#1C241E] hover:bg-[#F3EFE6] transition-colors whitespace-nowrap"
             >
               <RotateCcw className="w-4 h-4 text-[#58645B]" />
-              <span>Restore starter workspace</span>
+              <span>Load sample workspace</span>
             </button>
           )}
         </div>
@@ -618,7 +433,7 @@ export function SettingsView({
         {confirmReset && (
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl bg-[#FAF6EE] border border-[#E6DEC8]">
             <span className="text-sm text-[#1C241E]">
-              Replace current local data with starter items?
+              Replace current workspace items with sample data?
             </span>
             <div className="flex items-center gap-2">
               <button
@@ -628,12 +443,12 @@ export function SettingsView({
                   setConfirmReset(false);
                   setBackupNotice({
                     kind: 'success',
-                    message: 'Starter workspace restored.',
+                    message: 'Sample workspace loaded.',
                   });
                 }}
                 className="px-3.5 py-1.5 rounded-lg bg-[#1E3F31] text-white text-xs font-medium hover:bg-[#152E24]"
               >
-                Confirm restore
+                Confirm
               </button>
               <button
                 type="button"
@@ -649,11 +464,11 @@ export function SettingsView({
         <div className="mt-6 pt-5 border-t border-[#EFECE4] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <h3 className="text-sm font-medium text-[#1C241E]">
-              Clear all app data
+              Clear workspace data
             </h3>
             <p className="text-xs text-[#6A786D]">
-              Remove all saved tasks, habits, events, journal entries, finances,
-              and focus sessions.
+              Remove all tasks, habits, events, journal entries, finances, and
+              focus sessions from this account.
             </p>
           </div>
           <button
@@ -667,6 +482,7 @@ export function SettingsView({
         </div>
       </section>
 
+      {/* Clear All Data Confirmation Modal */}
       {clearModalOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-[#1C241E]/40 backdrop-blur-[2px] p-4"
@@ -688,10 +504,10 @@ export function SettingsView({
                     id="clear-data-dialog-title"
                     className="font-serif text-lg font-semibold text-[#1C241E]"
                   >
-                    Clear all app data?
+                    Clear workspace data?
                   </h2>
                   <p className="text-xs text-[#58645B]">
-                    This action removes all locally stored workspace items.
+                    This empties your current DAYSPACE workspace.
                   </p>
                 </div>
               </div>
@@ -707,8 +523,8 @@ export function SettingsView({
 
             <p className="mt-4 text-sm text-[#4B574E] leading-relaxed">
               Every task, habit check-in, calendar event, journal entry,
-              transaction, savings goal, and focus session will be erased from
-              browser storage. Export a JSON backup first if you want a copy.
+              transaction, savings goal, and focus session for this account will
+              be cleared. Export a JSON backup first if you want a copy.
             </p>
 
             <div className="mt-6 flex items-center justify-end gap-2.5">
@@ -725,6 +541,72 @@ export function SettingsView({
                 className="px-4 py-2 rounded-xl bg-[#9A3B30] text-white text-xs sm:text-sm font-medium hover:bg-[#7F2E24]"
               >
                 Yes, clear all data
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Logout Confirmation Modal */}
+      {logoutModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#1C241E]/40 backdrop-blur-[2px] p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="logout-dialog-title"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setLogoutModalOpen(false);
+          }}
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white border border-[#E5E1D8] p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#EDF3EE] text-[#1E3F31]">
+                  <LogOut className="w-5 h-5" />
+                </span>
+                <div>
+                  <h2
+                    id="logout-dialog-title"
+                    className="font-serif text-lg font-semibold text-[#1C241E]"
+                  >
+                    Log out of DAYSPACE?
+                  </h2>
+                  <p className="text-xs text-[#58645B] truncate">
+                    {supabaseAuth.user.email}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLogoutModalOpen(false)}
+                aria-label="Close logout dialog"
+                className="p-1.5 rounded-lg text-[#58645B] hover:bg-[#F3EFE6]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="mt-4 text-sm text-[#4B574E] leading-relaxed">
+              Your cloud workspace stays safely saved under your account. Active
+              workspace data will be cleared from screen so another person using
+              this browser cannot view it.
+            </p>
+
+            <div className="mt-6 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setLogoutModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-[#DDD8CD] bg-white text-xs sm:text-sm font-medium text-[#344038] hover:bg-[#F3EFE6]"
+              >
+                Stay signed in
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmLogout()}
+                disabled={supabaseAuth.submitting}
+                className="px-4 py-2 rounded-xl bg-[#1E3F31] text-white text-xs sm:text-sm font-medium hover:bg-[#152E24] disabled:opacity-60"
+              >
+                {supabaseAuth.submitting ? 'Signing out...' : 'Log out'}
               </button>
             </div>
           </div>

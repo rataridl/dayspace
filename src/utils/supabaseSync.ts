@@ -5,6 +5,20 @@ import { createEmptyDayspaceState, sanitizeDayspaceState } from './storage';
 
 export type CloudSyncStatus = 'local' | 'syncing' | 'synced' | 'error';
 
+export type CloudHydrationPhase =
+  | 'idle'
+  | 'loading'
+  | 'needs-migration-choice'
+  | 'ready'
+  | 'error';
+
+export type MigrationCandidateSource = 'account-local' | 'legacy-local';
+
+export interface MigrationCandidate {
+  source: MigrationCandidateSource;
+  state: DayspaceState;
+}
+
 export interface CloudWorkspaceFetchResult {
   ok: boolean;
   data?: unknown | null;
@@ -17,6 +31,24 @@ export interface CloudWorkspaceSaveResult {
   updatedAt?: string;
   error?: string;
 }
+
+export type AuthenticatedWorkspaceLoadResolution =
+  | {
+      phase: 'error';
+      error: string;
+    }
+  | {
+      phase: 'needs-migration-choice';
+      candidateSource: MigrationCandidateSource;
+      candidateState: DayspaceState;
+    }
+  | {
+      phase: 'ready';
+      state: DayspaceState;
+      lastSyncedAt: string | null;
+      source: 'cloud' | 'fresh';
+      shouldSyncInitialToCloud: boolean;
+    };
 
 export function hasMeaningfulWorkspaceData(state: DayspaceState): boolean {
   return (
@@ -32,8 +64,7 @@ export function hasMeaningfulWorkspaceData(state: DayspaceState): boolean {
 }
 
 /**
- * Resolves initial cloud vs. local state upon sign-in without ever overwriting
- * existing local user data with an empty or missing cloud workspace.
+ * Legacy helper retained for backward compatibility and tests.
  */
 export function resolveInitialCloudSync(
   localState: DayspaceState,
@@ -59,14 +90,20 @@ export function resolveInitialCloudSync(
     createEmptyDayspaceState(localState.profile.name)
   );
 
-  if (!hasMeaningfulWorkspaceData(sanitizedCloud) && hasMeaningfulWorkspaceData(localState)) {
+  if (
+    !hasMeaningfulWorkspaceData(sanitizedCloud) &&
+    hasMeaningfulWorkspaceData(localState)
+  ) {
     return {
       stateToUse: localState,
       shouldUploadLocal: true,
     };
   }
 
-  if (!hasMeaningfulWorkspaceData(sanitizedCloud) && !hasMeaningfulWorkspaceData(localState)) {
+  if (
+    !hasMeaningfulWorkspaceData(sanitizedCloud) &&
+    !hasMeaningfulWorkspaceData(localState)
+  ) {
     return {
       stateToUse: localState,
       shouldUploadLocal: false,
@@ -79,8 +116,83 @@ export function resolveInitialCloudSync(
   };
 }
 
+/**
+ * Strict multi-user workspace resolver upon login:
+ * - Case A: Existing cloud workspace with data -> loads cloud workspace cleanly.
+ * - Case B/C: Missing or empty cloud workspace + existing meaningful local data ->
+ *   requires explicit user confirmation before migrating or starting fresh.
+ * - Case D: Cloud fetch failure -> stops safely on error with Retry (never overwrites).
+ */
+export function resolveAuthenticatedWorkspaceLoad(params: {
+  cloudResult: CloudWorkspaceFetchResult;
+  userLocalState: DayspaceState | null;
+  legacyLocalState: DayspaceState | null;
+  defaultName: string;
+}): AuthenticatedWorkspaceLoadResolution {
+  const { cloudResult, userLocalState, legacyLocalState, defaultName } = params;
+
+  if (!cloudResult.ok) {
+    return {
+      phase: 'error',
+      error:
+        cloudResult.error ||
+        'Unable to reach your DAYSPACE cloud workspace. Your saved data has not been changed.',
+    };
+  }
+
+  const hasCloudObject =
+    cloudResult.data !== null &&
+    cloudResult.data !== undefined &&
+    typeof cloudResult.data === 'object' &&
+    !Array.isArray(cloudResult.data);
+
+  const baseline = createEmptyDayspaceState(defaultName);
+  const sanitizedCloud = hasCloudObject
+    ? sanitizeDayspaceState(cloudResult.data, baseline)
+    : null;
+
+  // Case A: Account already has saved cloud workspace data
+  if (sanitizedCloud && hasMeaningfulWorkspaceData(sanitizedCloud)) {
+    return {
+      phase: 'ready',
+      state: sanitizedCloud,
+      lastSyncedAt: cloudResult.updatedAt ?? null,
+      source: 'cloud',
+      shouldSyncInitialToCloud: false,
+    };
+  }
+
+  // Case C: Account has no meaningful cloud data yet, but account-scoped offline cache exists
+  if (userLocalState && hasMeaningfulWorkspaceData(userLocalState)) {
+    return {
+      phase: 'needs-migration-choice',
+      candidateSource: 'account-local',
+      candidateState: userLocalState,
+    };
+  }
+
+  // Case B / C: Account has no meaningful cloud data yet, and unclaimed pre-auth local workspace exists
+  if (legacyLocalState && hasMeaningfulWorkspaceData(legacyLocalState)) {
+    return {
+      phase: 'needs-migration-choice',
+      candidateSource: 'legacy-local',
+      candidateState: legacyLocalState,
+    };
+  }
+
+  // Brand-new account or clean empty workspace with no pending local data
+  const state = userLocalState ?? sanitizedCloud ?? baseline;
+  return {
+    phase: 'ready',
+    state,
+    lastSyncedAt: cloudResult.updatedAt ?? null,
+    source: hasCloudObject ? 'cloud' : 'fresh',
+    shouldSyncInitialToCloud: !hasCloudObject,
+  };
+}
+
 export async function fetchCloudWorkspace(
-  client: SupabaseClient,
+  client: Pick<SupabaseClient, 'from'>,
   userId: string
 ): Promise<CloudWorkspaceFetchResult> {
   try {
@@ -111,7 +223,7 @@ export async function fetchCloudWorkspace(
 }
 
 export async function saveCloudWorkspace(
-  client: SupabaseClient,
+  client: Pick<SupabaseClient, 'from'>,
   userId: string,
   state: DayspaceState
 ): Promise<CloudWorkspaceSaveResult> {
