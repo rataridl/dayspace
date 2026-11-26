@@ -5,11 +5,16 @@ import {
   supabase,
   supabaseEnvDiagnostic,
 } from '../lib/supabase';
+import { parseAuthUrlFeedback } from '../utils/authValidation';
 import {
-  parseAuthUrlFeedback,
-  validateAuthEmail,
-  validateAuthPassword,
-} from '../utils/authValidation';
+  registerWithEmailPassword,
+  requestAccountPasswordReset,
+  resendSignupVerification,
+  restoreAuthSession,
+  signInWithEmailPassword,
+  signOutAccount,
+  updateAccountPassword,
+} from '../utils/supabaseAuthOps';
 
 function getRedirectUrl(): string | undefined {
   if (typeof window === 'undefined') return undefined;
@@ -24,21 +29,26 @@ function getRedirectUrl(): string | undefined {
   }
 }
 
-function normalizeAuthErrorMessage(message: string): string {
-  const lower = message.toLowerCase();
-  if (lower.includes('invalid login credentials')) {
-    return 'Incorrect email or password. Please check your credentials and try again.';
+function cleanAuthHashIfNeeded(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const hash = window.location.hash;
+    if (
+      hash &&
+      (hash.includes('access_token=') ||
+        hash.includes('type=recovery') ||
+        hash.includes('type=signup') ||
+        hash.includes('error='))
+    ) {
+      window.history.replaceState(
+        null,
+        document.title,
+        window.location.pathname + window.location.search
+      );
+    }
+  } catch {
+    // Ignore history API errors in restricted environments
   }
-  if (lower.includes('email not confirmed')) {
-    return 'Please verify your email address before signing in. You can resend the confirmation email below.';
-  }
-  if (lower.includes('user already registered')) {
-    return 'An account with this email already exists. Try signing in instead.';
-  }
-  if (lower.includes('rate limit') || lower.includes('too many requests')) {
-    return 'Too many attempts right now. Please wait a moment and try again.';
-  }
-  return message;
 }
 
 export function useSupabaseAuth() {
@@ -87,25 +97,15 @@ export function useSupabaseAuth() {
     const client = supabase;
     let mounted = true;
 
-    client.auth
-      .getSession()
-      .then(({ data, error }) => {
-        if (!mounted) return;
-        if (error) {
-          setAuthError(normalizeAuthErrorMessage(error.message));
-        }
-        const sessionUser = data.session?.user ?? null;
-        hadAuthenticatedSessionRef.current = Boolean(sessionUser);
-        setUser(sessionUser);
-        setLoading(false);
-      })
-      .catch((err) => {
-        if (!mounted) return;
-        setAuthError(
-          err instanceof Error ? err.message : 'Unable to check auth session.'
-        );
-        setLoading(false);
-      });
+    restoreAuthSession(client.auth).then(({ user: sessionUser, error }) => {
+      if (!mounted) return;
+      if (error) {
+        setAuthError(error);
+      }
+      hadAuthenticatedSessionRef.current = Boolean(sessionUser);
+      setUser(sessionUser);
+      setLoading(false);
+    });
 
     const {
       data: { subscription },
@@ -138,9 +138,9 @@ export function useSupabaseAuth() {
       }
     );
 
-    const handleVisibilityOrFocus = () => {
+    const handleSessionRefreshCheck = () => {
       if (document.visibilityState === 'hidden') return;
-      void client.auth.getSession().then(({ data, error }) => {
+      void restoreAuthSession(client.auth).then(({ user: sessionUser, error }) => {
         if (!mounted) return;
         if (error && hadAuthenticatedSessionRef.current) {
           setAuthError(
@@ -150,7 +150,6 @@ export function useSupabaseAuth() {
           setUser(null);
           return;
         }
-        const sessionUser = data.session?.user ?? null;
         if (!sessionUser && hadAuthenticatedSessionRef.current) {
           setAuthNotice(
             'Your session expired or was signed out. Please sign in again.'
@@ -161,15 +160,23 @@ export function useSupabaseAuth() {
       });
     };
 
-    window.addEventListener('focus', handleVisibilityOrFocus);
-    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    const handleStorageSync = (e: StorageEvent) => {
+      if (!e.key || e.key.includes('auth-token')) {
+        handleSessionRefreshCheck();
+      }
+    };
+
+    window.addEventListener('focus', handleSessionRefreshCheck);
+    document.addEventListener('visibilitychange', handleSessionRefreshCheck);
+    window.addEventListener('storage', handleStorageSync);
 
     return () => {
       mounted = false;
       subscription.unsubscribe();
       window.removeEventListener('hashchange', syncUrlFeedback);
-      window.removeEventListener('focus', handleVisibilityOrFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleSessionRefreshCheck);
+      document.removeEventListener('visibilitychange', handleSessionRefreshCheck);
+      window.removeEventListener('storage', handleStorageSync);
     };
   }, []);
 
@@ -183,16 +190,6 @@ export function useSupabaseAuth() {
   }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
-    const cleanEmail = email.trim();
-    const emailError = validateAuthEmail(cleanEmail);
-    if (emailError) {
-      setAuthError(emailError);
-      return false;
-    }
-    if (!password) {
-      setAuthError('Please enter your password.');
-      return false;
-    }
     if (!supabase) {
       setAuthError('Supabase authentication is not configured in this environment.');
       return false;
@@ -203,25 +200,22 @@ export function useSupabaseAuth() {
     setAuthNotice(null);
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: cleanEmail,
-        password,
-      });
-      if (error) {
-        if (error.message.toLowerCase().includes('email not confirmed')) {
-          setPendingVerificationEmail(cleanEmail);
+      const result = await signInWithEmailPassword(
+        supabase.auth,
+        email,
+        password
+      );
+      if (!result.ok) {
+        if (result.requiresEmailVerification && result.pendingEmail) {
+          setPendingVerificationEmail(result.pendingEmail);
         }
-        setAuthError(normalizeAuthErrorMessage(error.message));
+        setAuthError(result.error || 'Sign-in failed.');
         return false;
       }
       setPendingVerificationEmail(null);
       setIsPasswordRecovery(false);
+      cleanAuthHashIfNeeded();
       return true;
-    } catch (err) {
-      setAuthError(
-        err instanceof Error ? err.message : 'Sign-in failed. Please try again.'
-      );
-      return false;
     } finally {
       setSubmitting(false);
     }
@@ -229,17 +223,6 @@ export function useSupabaseAuth() {
 
   const signUp = useCallback(
     async (email: string, password: string, displayName?: string) => {
-      const cleanEmail = email.trim();
-      const emailError = validateAuthEmail(cleanEmail);
-      if (emailError) {
-        setAuthError(emailError);
-        return false;
-      }
-      const passwordError = validateAuthPassword(password, 6);
-      if (passwordError) {
-        setAuthError(passwordError);
-        return false;
-      }
       if (!supabase) {
         setAuthError(
           'Supabase authentication is not configured in this environment.'
@@ -252,36 +235,24 @@ export function useSupabaseAuth() {
       setAuthNotice(null);
 
       try {
-        const cleanName = displayName?.trim();
-        const { data, error } = await supabase.auth.signUp({
-          email: cleanEmail,
+        const result = await registerWithEmailPassword(
+          supabase.auth,
+          email,
           password,
-          options: {
+          {
+            displayName,
             emailRedirectTo: getRedirectUrl(),
-            ...(cleanName ? { data: { full_name: cleanName } } : {}),
-          },
-        });
-        if (error) {
-          setAuthError(normalizeAuthErrorMessage(error.message));
+          }
+        );
+        if (!result.ok) {
+          setAuthError(result.error || 'Could not create account.');
           return false;
         }
-        if (data.session) {
-          setPendingVerificationEmail(null);
-          setAuthNotice('Account created. Opening your DAYSPACE workspace...');
-        } else {
-          setPendingVerificationEmail(cleanEmail);
-          setAuthNotice(
-            `Confirmation link sent to ${cleanEmail}. Check your inbox (and spam folder) to verify your account before signing in.`
-          );
-        }
-        return true;
-      } catch (err) {
-        setAuthError(
-          err instanceof Error
-            ? err.message
-            : 'Could not create account. Please try again.'
+        setPendingVerificationEmail(
+          result.requiresEmailVerification ? result.pendingEmail ?? null : null
         );
-        return false;
+        setAuthNotice(result.notice || null);
+        return true;
       } finally {
         setSubmitting(false);
       }
@@ -290,12 +261,6 @@ export function useSupabaseAuth() {
   );
 
   const resendVerificationEmail = useCallback(async (email: string) => {
-    const cleanEmail = email.trim();
-    const emailError = validateAuthEmail(cleanEmail);
-    if (emailError) {
-      setAuthError(emailError);
-      return false;
-    }
     if (!supabase) {
       setAuthError(
         'Supabase authentication is not configured in this environment.'
@@ -308,40 +273,25 @@ export function useSupabaseAuth() {
     setAuthNotice(null);
 
     try {
-      const { error } = await supabase.auth.resend({
-        type: 'signup',
-        email: cleanEmail,
-        options: {
-          emailRedirectTo: getRedirectUrl(),
-        },
-      });
-      if (error) {
-        setAuthError(normalizeAuthErrorMessage(error.message));
+      const result = await resendSignupVerification(
+        supabase.auth,
+        email,
+        getRedirectUrl()
+      );
+      if (!result.ok) {
+        setAuthError(
+          result.error || 'Unable to resend verification email right now.'
+        );
         return false;
       }
-      setAuthNotice(
-        `Verification email sent again to ${cleanEmail}. Please open the link in your inbox.`
-      );
+      setAuthNotice(result.notice || null);
       return true;
-    } catch (err) {
-      setAuthError(
-        err instanceof Error
-          ? err.message
-          : 'Unable to resend verification email right now.'
-      );
-      return false;
     } finally {
       setSubmitting(false);
     }
   }, []);
 
   const requestPasswordReset = useCallback(async (email: string) => {
-    const cleanEmail = email.trim();
-    const emailError = validateAuthEmail(cleanEmail);
-    if (emailError) {
-      setAuthError(emailError);
-      return false;
-    }
     if (!supabase) {
       setAuthError(
         'Supabase authentication is not configured in this environment.'
@@ -354,35 +304,25 @@ export function useSupabaseAuth() {
     setAuthNotice(null);
 
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
-        redirectTo: getRedirectUrl(),
-      });
-      if (error) {
-        setAuthError(normalizeAuthErrorMessage(error.message));
+      const result = await requestAccountPasswordReset(
+        supabase.auth,
+        email,
+        getRedirectUrl()
+      );
+      if (!result.ok) {
+        setAuthError(
+          result.error || 'Unable to send password reset email right now.'
+        );
         return false;
       }
-      setAuthNotice(
-        `If an account exists for ${cleanEmail}, a password reset link has been sent. Open the link in your email to set a new password.`
-      );
+      setAuthNotice(result.notice || null);
       return true;
-    } catch (err) {
-      setAuthError(
-        err instanceof Error
-          ? err.message
-          : 'Unable to send password reset email right now.'
-      );
-      return false;
     } finally {
       setSubmitting(false);
     }
   }, []);
 
   const updatePassword = useCallback(async (newPassword: string) => {
-    const passwordError = validateAuthPassword(newPassword, 6);
-    if (passwordError) {
-      setAuthError(passwordError);
-      return false;
-    }
     if (!supabase) {
       setAuthError(
         'Supabase authentication is not configured in this environment.'
@@ -395,23 +335,15 @@ export function useSupabaseAuth() {
     setAuthNotice(null);
 
     try {
-      const { error } = await supabase.auth.updateUser({
-        password: newPassword,
-      });
-      if (error) {
-        setAuthError(normalizeAuthErrorMessage(error.message));
+      const result = await updateAccountPassword(supabase.auth, newPassword);
+      if (!result.ok) {
+        setAuthError(result.error || 'Unable to update password right now.');
         return false;
       }
       setIsPasswordRecovery(false);
-      setAuthNotice('Your password has been updated.');
+      cleanAuthHashIfNeeded();
+      setAuthNotice(result.notice || 'Your password has been updated.');
       return true;
-    } catch (err) {
-      setAuthError(
-        err instanceof Error
-          ? err.message
-          : 'Unable to update password right now.'
-      );
-      return false;
     } finally {
       setSubmitting(false);
     }
@@ -421,6 +353,7 @@ export function useSupabaseAuth() {
     setIsPasswordRecovery(false);
     setAuthError(null);
     setAuthNotice(null);
+    cleanAuthHashIfNeeded();
   }, []);
 
   const signOut = useCallback(async () => {
@@ -430,22 +363,18 @@ export function useSupabaseAuth() {
     setAuthNotice(null);
     intentionalSignOutRef.current = true;
     try {
-      const { error } = await supabase.auth.signOut();
-      if (error) {
+      const result = await signOutAccount(supabase.auth);
+      if (!result.ok) {
         intentionalSignOutRef.current = false;
-        setAuthError(normalizeAuthErrorMessage(error.message));
+        setAuthError(result.error || 'Unable to sign out right now.');
       } else {
         hadAuthenticatedSessionRef.current = false;
         setIsPasswordRecovery(false);
         setPendingVerificationEmail(null);
         setUser(null);
-        setAuthNotice('You have been signed out safely.');
+        cleanAuthHashIfNeeded();
+        setAuthNotice(result.notice || 'You have been signed out safely.');
       }
-    } catch (err) {
-      intentionalSignOutRef.current = false;
-      setAuthError(
-        err instanceof Error ? err.message : 'Unable to sign out right now.'
-      );
     } finally {
       setSubmitting(false);
     }

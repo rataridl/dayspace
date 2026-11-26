@@ -193,24 +193,44 @@ export function SettingsView({
 
         <div className="mt-4 space-y-4">
           <div className="rounded-xl bg-[#FBF9F4] border border-[#EAE6DC] p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-            <div className="min-w-0 space-y-1">
+            <div className="min-w-0 space-y-1.5">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-[#58645B]">Signed in as</span>
-                <span className="inline-flex items-center gap-1 rounded-md bg-[#EDF3EE] px-2 py-0.5 text-[11px] font-medium text-[#1E3F31]">
+                <span
+                  className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium ${
+                    supabaseAuth.user.email_confirmed_at
+                      ? 'bg-[#EDF3EE] text-[#1E3F31]'
+                      : 'bg-[#FAF6EE] text-[#8A6D2D]'
+                  }`}
+                >
                   <ShieldCheck className="w-3 h-3" />
-                  Verified account
+                  {supabaseAuth.user.email_confirmed_at
+                    ? 'Verified'
+                    : 'Active · Email unverified'}
                 </span>
               </div>
               <p className="text-sm font-medium text-[#1C241E] truncate">
                 {supabaseAuth.user.email || 'Authenticated user'}
               </p>
-              <p className="text-xs text-[#5C7C66] font-mono tabular-nums">
-                {cloudSync.status === 'syncing'
-                  ? 'Syncing workspace...'
-                  : cloudSync.status === 'error'
-                  ? 'Sync attention needed (saved locally)'
-                  : `Last synced · ${formatSyncTime(cloudSync.lastSyncedAt)}`}
-              </p>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-mono tabular-nums">
+                <span
+                  className={
+                    cloudSync.status === 'error'
+                      ? 'text-[#9A3B30]'
+                      : 'text-[#5C7C66]'
+                  }
+                >
+                  Sync status:{' '}
+                  {cloudSync.status === 'syncing'
+                    ? 'Syncing'
+                    : cloudSync.status === 'error'
+                    ? 'Paused (offline / retry)'
+                    : 'Synced'}
+                </span>
+                <span className="text-[#58645B]">
+                  Last synced: {formatSyncTime(cloudSync.lastSyncedAt)}
+                </span>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">

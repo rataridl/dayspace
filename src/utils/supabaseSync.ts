@@ -36,6 +36,7 @@ export type AuthenticatedWorkspaceLoadResolution =
   | {
       phase: 'error';
       error: string;
+      offlineFallbackState: DayspaceState | null;
     }
   | {
       phase: 'needs-migration-choice';
@@ -137,6 +138,7 @@ export function resolveAuthenticatedWorkspaceLoad(params: {
       error:
         cloudResult.error ||
         'Unable to reach your DAYSPACE cloud workspace. Your saved data has not been changed.',
+      offlineFallbackState: userLocalState,
     };
   }
 

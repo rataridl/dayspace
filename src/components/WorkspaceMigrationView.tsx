@@ -16,9 +16,11 @@ interface WorkspaceMigrationViewProps {
   userEmail: string;
   phase: Exclude<CloudHydrationPhase, 'idle' | 'ready'>;
   error: string | null;
+  canContinueOffline?: boolean;
   candidate: MigrationCandidate | null;
   submitting: boolean;
   onRetry: () => void;
+  onContinueOffline?: () => void;
   onConfirmImport: () => Promise<boolean>;
   onConfirmStartFresh: () => Promise<boolean>;
   onSignOut: () => Promise<void>;
@@ -28,9 +30,11 @@ export function WorkspaceMigrationView({
   userEmail,
   phase,
   error,
+  canContinueOffline,
   candidate,
   submitting,
   onRetry,
+  onContinueOffline,
   onConfirmImport,
   onConfirmStartFresh,
   onSignOut,
@@ -115,6 +119,15 @@ export function WorkspaceMigrationView({
                 <RefreshCw className="w-4 h-4" />
                 <span>Retry loading workspace</span>
               </button>
+              {canContinueOffline && onContinueOffline && (
+                <button
+                  type="button"
+                  onClick={onContinueOffline}
+                  className="px-4 py-2.5 rounded-xl border border-[#C6DEC9] bg-[#EDF3EE] text-sm font-medium text-[#1E3F31] hover:bg-[#DCE8DE] transition-colors"
+                >
+                  Continue offline with cached data
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => void onSignOut()}

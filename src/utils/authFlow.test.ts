@@ -33,6 +33,16 @@ import {
   resolveAuthenticatedWorkspaceLoad,
   saveCloudWorkspace,
 } from './supabaseSync';
+import {
+  registerWithEmailPassword,
+  requestAccountPasswordReset,
+  resendSignupVerification,
+  restoreAuthSession,
+  signInWithEmailPassword,
+  signOutAccount,
+  SupabaseAuthClient,
+  updateAccountPassword,
+} from './supabaseAuthOps';
 
 function createMemoryStorage(initial: Record<string, string> = {}): Storage {
   const store = new Map<string, string>(Object.entries(initial));
@@ -492,4 +502,203 @@ test('multi-user cloud sync + RLS isolation preserves User A data across logout/
       assert.equal(parsedBackup.state.journalEntries[0]?.photos?.[0]?.id, 'photo-1');
     }
   }
+});
+
+test('Case D preserves account-local offline fallback without leaking across users', () => {
+  const userALocal = createEmptyDayspaceState('Alice');
+  userALocal.wallets = [
+    {
+      id: 'w-offline',
+      name: 'Cash',
+      type: WalletType.Cash,
+      balance: 100000,
+      color: '#5C7C66',
+      icon: 'banknote',
+      createdAt: '2026-11-26T00:00:00Z',
+      updatedAt: '2026-11-26T00:00:00Z',
+    },
+  ];
+
+  const withCache = resolveAuthenticatedWorkspaceLoad({
+    cloudResult: { ok: false, error: 'Offline' },
+    userLocalState: userALocal,
+    legacyLocalState: null,
+    defaultName: 'Alice',
+  });
+  assert.equal(withCache.phase, 'error');
+  if (withCache.phase === 'error') {
+    assert.equal(withCache.offlineFallbackState?.wallets[0]?.balance, 100000);
+  }
+
+  const withoutCache = resolveAuthenticatedWorkspaceLoad({
+    cloudResult: { ok: false, error: 'Offline' },
+    userLocalState: null,
+    legacyLocalState: userALocal,
+    defaultName: 'Bob',
+  });
+  assert.equal(withoutCache.phase, 'error');
+  if (withoutCache.phase === 'error') {
+    assert.equal(withoutCache.offlineFallbackState, null);
+  }
+});
+
+test('supabaseAuthOps covers registration, email verification, sign-in, session refresh persistence, password reset, and logout', async () => {
+  const users = new Map<
+    string,
+    { id: string; email: string; password: string; confirmed: boolean; fullName?: string }
+  >();
+  let activeSessionUser: { id: string; email: string } | null = null;
+  let sessionExpired = false;
+  let resetTokensRequested = 0;
+
+  const mockAuth = {
+    async getSession() {
+      if (sessionExpired) {
+        activeSessionUser = null;
+        return { data: { session: null }, error: { message: 'JWT expired' } };
+      }
+      return {
+        data: {
+          session: activeSessionUser
+            ? {
+                user: {
+                  id: activeSessionUser.id,
+                  email: activeSessionUser.email,
+                  email_confirmed_at: '2026-11-26T00:00:00Z',
+                },
+              }
+            : null,
+        },
+        error: null,
+      };
+    },
+    async signUp({
+      email,
+      password,
+      options,
+    }: {
+      email: string;
+      password: string;
+      options?: { data?: { full_name?: string } };
+    }) {
+      if (users.has(email)) {
+        return { data: { user: null, session: null }, error: { message: 'User already registered' } };
+      }
+      const user = {
+        id: `uid-${users.size + 1}`,
+        email,
+        password,
+        confirmed: false,
+        fullName: options?.data?.full_name,
+      };
+      users.set(email, user);
+      return {
+        data: {
+          user: { id: user.id, email: user.email },
+          session: null,
+        },
+        error: null,
+      };
+    },
+    async resend({ email }: { email: string }) {
+      if (!users.has(email)) {
+        return { error: { message: 'User not found' } };
+      }
+      return { error: null };
+    },
+    async signInWithPassword({
+      email,
+      password,
+    }: {
+      email: string;
+      password: string;
+    }) {
+      const record = users.get(email);
+      if (!record || record.password !== password) {
+        return { data: { user: null, session: null }, error: { message: 'Invalid login credentials' } };
+      }
+      if (!record.confirmed) {
+        return { data: { user: null, session: null }, error: { message: 'Email not confirmed' } };
+      }
+      sessionExpired = false;
+      activeSessionUser = { id: record.id, email: record.email };
+      return {
+        data: {
+          user: { id: record.id, email: record.email },
+          session: { user: { id: record.id, email: record.email } },
+        },
+        error: null,
+      };
+    },
+    async resetPasswordForEmail() {
+      resetTokensRequested += 1;
+      return { error: null };
+    },
+    async updateUser({ password }: { password?: string }) {
+      if (!activeSessionUser) {
+        return { data: { user: null }, error: { message: 'Auth session missing!' } };
+      }
+      const record = users.get(activeSessionUser.email);
+      if (record && password) {
+        record.password = password;
+      }
+      return {
+        data: { user: { id: activeSessionUser.id, email: activeSessionUser.email } },
+        error: null,
+      };
+    },
+    async signOut() {
+      activeSessionUser = null;
+      return { error: null };
+    },
+  } as unknown as SupabaseAuthClient;
+
+  // 1. Register new account -> requires email verification
+  const signupRes = await registerWithEmailPassword(mockAuth, 'clara@dayspace.app', 'secret123', {
+    displayName: 'Clara',
+    emailRedirectTo: 'https://rataridl.github.io/dayspace/',
+  });
+  assert.equal(signupRes.ok, true);
+  assert.equal(signupRes.requiresEmailVerification, true);
+  assert.equal(signupRes.pendingEmail, 'clara@dayspace.app');
+
+  // 2. Resend verification & block unconfirmed sign-in
+  assert.equal((await resendSignupVerification(mockAuth, 'clara@dayspace.app')).ok, true);
+  const unconfirmedLogin = await signInWithEmailPassword(mockAuth, 'clara@dayspace.app', 'secret123');
+  assert.equal(unconfirmedLogin.ok, false);
+  assert.equal(unconfirmedLogin.requiresEmailVerification, true);
+
+  // 3. Simulate confirming email -> login succeeds & session persists across refresh
+  users.get('clara@dayspace.app')!.confirmed = true;
+  const loginRes = await signInWithEmailPassword(mockAuth, 'clara@dayspace.app', 'secret123');
+  assert.equal(loginRes.ok, true);
+  assert.equal(loginRes.user?.email, 'clara@dayspace.app');
+
+  const refreshedSession = await restoreAuthSession(mockAuth);
+  assert.equal(refreshedSession.user?.email, 'clara@dayspace.app');
+  assert.equal(refreshedSession.error, null);
+
+  // 4. Password reset request & password update
+  const resetReq = await requestAccountPasswordReset(
+    mockAuth,
+    'clara@dayspace.app',
+    'https://rataridl.github.io/dayspace/'
+  );
+  assert.equal(resetReq.ok, true);
+  assert.equal(resetTokensRequested, 1);
+
+  const pwUpdate = await updateAccountPassword(mockAuth, 'newpass456');
+  assert.equal(pwUpdate.ok, true);
+
+  // 5. Sign out clears session cleanly & new password works on re-login
+  assert.equal((await signOutAccount(mockAuth)).ok, true);
+  assert.equal((await restoreAuthSession(mockAuth)).user, null);
+  assert.equal((await signInWithEmailPassword(mockAuth, 'clara@dayspace.app', 'secret123')).ok, false);
+  assert.equal((await signInWithEmailPassword(mockAuth, 'clara@dayspace.app', 'newpass456')).ok, true);
+
+  // 6. Expired session clears active user safely
+  sessionExpired = true;
+  const expiredRestore = await restoreAuthSession(mockAuth);
+  assert.equal(expiredRestore.user, null);
+  assert.match(expiredRestore.error || '', /JWT expired/);
 });

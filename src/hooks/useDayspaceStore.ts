@@ -67,6 +67,8 @@ export function useDayspaceStore(
     cloudUserId ? 'loading' : 'idle'
   );
   const [hydrationError, setHydrationError] = useState<string | null>(null);
+  const [offlineFallbackState, setOfflineFallbackState] =
+    useState<DayspaceState | null>(null);
   const [migrationCandidate, setMigrationCandidate] =
     useState<MigrationCandidate | null>(null);
   const [migrationSubmitting, setMigrationSubmitting] = useState(false);
@@ -102,6 +104,7 @@ export function useDayspaceStore(
       setLastSyncedAt(null);
       setHydrationPhase('idle');
       setHydrationError(null);
+      setOfflineFallbackState(null);
       setMigrationCandidate(null);
       setMigrationSubmitting(false);
       return;
@@ -119,6 +122,7 @@ export function useDayspaceStore(
 
     setHydrationPhase('loading');
     setHydrationError(null);
+    setOfflineFallbackState(null);
     setMigrationCandidate(null);
     setCloudSyncStatus('syncing');
     setCloudSyncError(null);
@@ -142,6 +146,7 @@ export function useDayspaceStore(
 
       if (resolution.phase === 'error') {
         hydratedCloudUserRef.current = null;
+        setOfflineFallbackState(resolution.offlineFallbackState);
         setCloudSyncStatus('error');
         setCloudSyncError(resolution.error);
         setHydrationError(resolution.error);
@@ -202,6 +207,19 @@ export function useDayspaceStore(
   const retryCloudHydration = useCallback(() => {
     setRetryCounter((c) => c + 1);
   }, []);
+
+  const continueOfflineWithCache = useCallback(() => {
+    if (!cloudUserId || !offlineFallbackState) return;
+    skipNextCloudSaveRef.current = true;
+    hydratedCloudUserRef.current = cloudUserId;
+    setState(offlineFallbackState);
+    setHydrationError(null);
+    setCloudSyncStatus('error');
+    setCloudSyncError(
+      'Working offline using this account’s cached local workspace'
+    );
+    setHydrationPhase('ready');
+  }, [cloudUserId, offlineFallbackState]);
 
   const confirmImportMigration = useCallback(async () => {
     if (!cloudUserId || !supabase || !migrationCandidate) return false;
@@ -1061,9 +1079,11 @@ export function useDayspaceStore(
     lastSyncedAt,
     hydrationPhase,
     hydrationError,
+    canContinueOffline: Boolean(offlineFallbackState),
     migrationCandidate,
     migrationSubmitting,
     retryCloudHydration,
+    continueOfflineWithCache,
     confirmImportMigration,
     confirmStartFreshMigration,
     syncNow,

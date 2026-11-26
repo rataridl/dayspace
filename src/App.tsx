@@ -44,9 +44,11 @@ export default function App() {
     lastSyncedAt,
     hydrationPhase,
     hydrationError,
+    canContinueOffline,
     migrationCandidate,
     migrationSubmitting,
     retryCloudHydration,
+    continueOfflineWithCache,
     confirmImportMigration,
     confirmStartFreshMigration,
     syncNow,
@@ -205,9 +207,11 @@ export default function App() {
         userEmail={auth.user.email || 'Authenticated user'}
         phase={visibleMigrationPhase}
         error={hydrationError}
+        canContinueOffline={canContinueOffline}
         candidate={migrationCandidate}
         submitting={migrationSubmitting}
         onRetry={retryCloudHydration}
+        onContinueOffline={continueOfflineWithCache}
         onConfirmImport={confirmImportMigration}
         onConfirmStartFresh={confirmStartFreshMigration}
         onSignOut={auth.signOut}
