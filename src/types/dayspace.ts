@@ -34,6 +34,39 @@ export enum JournalMood {
 export enum TransactionType {
   Income = 'income',
   Expense = 'expense',
+  Transfer = 'transfer',
+}
+
+export enum WalletType {
+  Dana = 'dana',
+  GoPay = 'gopay',
+  Ovo = 'ovo',
+  ShopeePay = 'shopeepay',
+  LinkAja = 'linkaja',
+  Bank = 'bank',
+  Cash = 'cash',
+  Custom = 'custom',
+}
+
+export type WalletIcon =
+  | 'wallet'
+  | 'smartphone'
+  | 'landmark'
+  | 'banknote'
+  | 'credit-card'
+  | 'coins'
+  | 'sparkles';
+
+export interface DigitalWallet {
+  id: string;
+  name: string;
+  type: WalletType;
+  balance: number;
+  notes?: string;
+  color: string;
+  icon: WalletIcon;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export enum PomodoroMode {
@@ -113,6 +146,8 @@ export interface FinanceTransaction {
   amount: number;
   category: string;
   date: string; // YYYY-MM-DD
+  walletId?: string;
+  destinationWalletId?: string;
   notes?: string;
   createdAt: string;
 }
@@ -164,6 +199,7 @@ export interface DayspaceState {
   habits: HabitItem[];
   events: CalendarEvent[];
   journalEntries: JournalEntry[];
+  wallets: DigitalWallet[];
   transactions: FinanceTransaction[];
   savingsGoals: SavingsGoal[];
   pomodoroSettings: PomodoroSettings;

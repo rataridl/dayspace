@@ -5,6 +5,7 @@ import {
   CalendarDisplayMode,
   CalendarEvent,
   DayspaceState,
+  DigitalWallet,
   FinanceTransaction,
   HabitItem,
   JournalEntry,
@@ -19,6 +20,8 @@ import {
   TaskPriority,
   TransactionType,
   UserProfile,
+  WalletIcon,
+  WalletType,
 } from '../types/dayspace';
 import { sanitizeJournalPhotos } from '../utils/journalPhotos';
 import {
@@ -36,6 +39,13 @@ import {
   resolveInitialCloudSync,
   saveCloudWorkspace,
 } from '../utils/supabaseSync';
+import {
+  applyTransactionBalanceDelta,
+  deduplicateTransactions,
+  reconcileWalletsForTransactionChange,
+  TRANSFER_CATEGORY,
+  WALLET_TYPE_META,
+} from '../utils/wallets';
 
 export function useDayspaceStore(cloudUserId?: string | null) {
   const [state, setState] = useState<DayspaceState>(() => loadDayspaceState());
@@ -491,6 +501,80 @@ export function useDayspaceStore(cloudUserId?: string | null) {
     }));
   }, []);
 
+  const addWallet = useCallback(
+    (input: {
+      name: string;
+      type: WalletType;
+      balance: number;
+      notes?: string;
+      color?: string;
+      icon?: WalletIcon;
+    }) => {
+      const nowIso = new Date().toISOString();
+      const preset = WALLET_TYPE_META[input.type] || WALLET_TYPE_META[WalletType.Custom];
+      const newWallet: DigitalWallet = {
+        id: `wallet-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: input.name.trim() || preset.defaultName,
+        type: input.type,
+        balance: Number.isFinite(Number(input.balance)) ? Number(input.balance) : 0,
+        notes: input.notes?.trim() || undefined,
+        color: input.color || preset.defaultColor,
+        icon: input.icon || preset.defaultIcon,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      setState((prev) => ({
+        ...prev,
+        wallets: [...prev.wallets, newWallet],
+      }));
+    },
+    []
+  );
+
+  const updateWallet = useCallback(
+    (
+      walletId: string,
+      updates: {
+        name: string;
+        type: WalletType;
+        balance: number;
+        notes?: string;
+        color?: string;
+        icon?: WalletIcon;
+      }
+    ) => {
+      const nowIso = new Date().toISOString();
+      setState((prev) => ({
+        ...prev,
+        wallets: prev.wallets.map((wallet) => {
+          if (wallet.id !== walletId) return wallet;
+          const preset =
+            WALLET_TYPE_META[updates.type] || WALLET_TYPE_META[WalletType.Custom];
+          return {
+            ...wallet,
+            name: updates.name.trim() || wallet.name,
+            type: updates.type,
+            balance: Number.isFinite(Number(updates.balance))
+              ? Number(updates.balance)
+              : wallet.balance,
+            notes: updates.notes?.trim() || undefined,
+            color: updates.color || preset.defaultColor,
+            icon: updates.icon || preset.defaultIcon,
+            updatedAt: nowIso,
+          };
+        }),
+      }));
+    },
+    []
+  );
+
+  const deleteWallet = useCallback((walletId: string) => {
+    setState((prev) => ({
+      ...prev,
+      wallets: prev.wallets.filter((w) => w.id !== walletId),
+    }));
+  }, []);
+
   const addTransaction = useCallback(
     (input: {
       type: TransactionType;
@@ -498,6 +582,8 @@ export function useDayspaceStore(cloudUserId?: string | null) {
       amount: number;
       category: string;
       date: string;
+      walletId?: string;
+      destinationWalletId?: string;
       notes?: string;
     }) => {
       const newTx: FinanceTransaction = {
@@ -505,14 +591,22 @@ export function useDayspaceStore(cloudUserId?: string | null) {
         type: input.type,
         title: input.title.trim(),
         amount: Math.max(0, Number(input.amount) || 0),
-        category: input.category.trim() || 'Other',
+        category:
+          input.type === TransactionType.Transfer
+            ? input.category.trim() || TRANSFER_CATEGORY
+            : input.category.trim() || 'Other',
         date: input.date || getTodayDateKey(),
+        ...(input.walletId ? { walletId: input.walletId } : {}),
+        ...(input.type === TransactionType.Transfer && input.destinationWalletId
+          ? { destinationWalletId: input.destinationWalletId }
+          : {}),
         notes: input.notes?.trim() || undefined,
         createdAt: new Date().toISOString(),
       };
       setState((prev) => ({
         ...prev,
-        transactions: [newTx, ...prev.transactions],
+        wallets: applyTransactionBalanceDelta(prev.wallets, newTx, 1),
+        transactions: deduplicateTransactions([newTx, ...prev.transactions]),
       }));
     },
     []
@@ -527,35 +621,86 @@ export function useDayspaceStore(cloudUserId?: string | null) {
         amount: number;
         category: string;
         date: string;
+        walletId?: string;
+        destinationWalletId?: string;
         notes?: string;
       }
     ) => {
-      setState((prev) => ({
-        ...prev,
-        transactions: prev.transactions.map((tx) =>
-          tx.id === transactionId
-            ? {
-                ...tx,
-                type: updates.type,
-                title: updates.title.trim(),
-                amount: Math.max(0, Number(updates.amount) || 0),
-                category: updates.category.trim() || 'Other',
-                date: updates.date || tx.date,
-                notes: updates.notes?.trim() || undefined,
-              }
-            : tx
-        ),
-      }));
+      setState((prev) => {
+        const existingTx = prev.transactions.find((t) => t.id === transactionId);
+        if (!existingTx) return prev;
+
+        const nextTx: FinanceTransaction = {
+          ...existingTx,
+          type: updates.type,
+          title: updates.title.trim(),
+          amount: Math.max(0, Number(updates.amount) || 0),
+          category:
+            updates.type === TransactionType.Transfer
+              ? updates.category.trim() || TRANSFER_CATEGORY
+              : updates.category.trim() || 'Other',
+          date: updates.date || existingTx.date,
+          walletId: updates.walletId || undefined,
+          destinationWalletId:
+            updates.type === TransactionType.Transfer
+              ? updates.destinationWalletId || undefined
+              : undefined,
+          notes: updates.notes?.trim() || undefined,
+        };
+
+        return {
+          ...prev,
+          wallets: reconcileWalletsForTransactionChange(
+            prev.wallets,
+            existingTx,
+            nextTx
+          ),
+          transactions: prev.transactions.map((tx) =>
+            tx.id === transactionId ? nextTx : tx
+          ),
+        };
+      });
     },
     []
   );
 
   const deleteTransaction = useCallback((transactionId: string) => {
-    setState((prev) => ({
-      ...prev,
-      transactions: prev.transactions.filter((tx) => tx.id !== transactionId),
-    }));
+    setState((prev) => {
+      const existingTx = prev.transactions.find((t) => t.id === transactionId);
+      if (!existingTx) return prev;
+      return {
+        ...prev,
+        wallets: applyTransactionBalanceDelta(prev.wallets, existingTx, -1),
+        transactions: prev.transactions.filter((tx) => tx.id !== transactionId),
+      };
+    });
   }, []);
+
+  const importTransactionsCsv = useCallback(
+    (importedTransactions: FinanceTransaction[]) => {
+      if (importedTransactions.length === 0) return;
+      setState((prev) => {
+        const combined = deduplicateTransactions(
+          [...importedTransactions, ...prev.transactions],
+          { deduplicateBySignature: true }
+        );
+        const existingIds = new Set(prev.transactions.map((t) => t.id));
+        const newlyAdded = combined.filter((t) => !existingIds.has(t.id));
+
+        let nextWallets = prev.wallets;
+        for (const tx of newlyAdded) {
+          nextWallets = applyTransactionBalanceDelta(nextWallets, tx, 1);
+        }
+
+        return {
+          ...prev,
+          wallets: nextWallets,
+          transactions: combined,
+        };
+      });
+    },
+    []
+  );
 
   const addSavingsGoal = useCallback(
     (input: {
@@ -759,9 +904,13 @@ export function useDayspaceStore(cloudUserId?: string | null) {
     addJournalEntry,
     updateJournalEntry,
     deleteJournalEntry,
+    addWallet,
+    updateWallet,
+    deleteWallet,
     addTransaction,
     updateTransaction,
     deleteTransaction,
+    importTransactionsCsv,
     addSavingsGoal,
     updateSavingsGoal,
     contributeToSavingsGoal,

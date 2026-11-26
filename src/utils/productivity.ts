@@ -750,7 +750,7 @@ export function computeMonthlyFinanceSummary(
     transactionCount += 1;
     if (tx.type === TransactionType.Income) {
       income += tx.amount;
-    } else {
+    } else if (tx.type === TransactionType.Expense) {
       expenses += tx.amount;
     }
   }
@@ -833,7 +833,10 @@ export function filterTransactions(
   monthKey: string | 'all',
   typeFilter: TransactionType | 'all' = 'all',
   categoryFilter: string = 'All',
-  searchQuery: string = ''
+  searchQuery: string = '',
+  walletFilter: string = 'all',
+  dateFilter: string = '',
+  walletNamesById?: Record<string, string>
 ): FinanceTransaction[] {
   const query = searchQuery.trim().toLowerCase();
 
@@ -842,14 +845,29 @@ export function filterTransactions(
       if (monthKey !== 'all' && getMonthKeyFromDateKey(tx.date) !== monthKey) {
         return false;
       }
+      if (dateFilter && tx.date !== dateFilter) {
+        return false;
+      }
       if (typeFilter !== 'all' && tx.type !== typeFilter) {
         return false;
       }
       if (categoryFilter !== 'All' && tx.category !== categoryFilter) {
         return false;
       }
+      if (
+        walletFilter !== 'all' &&
+        tx.walletId !== walletFilter &&
+        tx.destinationWalletId !== walletFilter
+      ) {
+        return false;
+      }
       if (!query) return true;
-      const haystack = `${tx.title} ${tx.category} ${tx.notes || ''} ${tx.date}`.toLowerCase();
+      const sourceWalletName =
+        (tx.walletId && walletNamesById?.[tx.walletId]) || '';
+      const destWalletName =
+        (tx.destinationWalletId && walletNamesById?.[tx.destinationWalletId]) ||
+        '';
+      const haystack = `${tx.title} ${tx.category} ${tx.notes || ''} ${tx.date} ${sourceWalletName} ${destWalletName}`.toLowerCase();
       return haystack.includes(query);
     })
     .sort((a, b) => {

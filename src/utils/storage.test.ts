@@ -7,6 +7,7 @@ import {
   TaskCategory,
   TaskPriority,
   TransactionType,
+  WalletType,
 } from '../types/dayspace';
 import {
   clearDayspaceStorage,
@@ -46,6 +47,7 @@ test('loadDayspaceState handles missing and corrupted LocalStorage gracefully', 
   const emptyStorage = createMemoryStorage();
   const initial = loadDayspaceState(emptyStorage);
   assert.ok(initial.tasks.length > 0);
+  assert.ok(initial.wallets.length > 0);
   assert.equal(initial.profile.name, 'Clara');
 
   const corruptedStorage = createMemoryStorage({
@@ -92,6 +94,19 @@ test('saveDayspaceState and loadDayspaceState round-trip all workspace domains a
       updatedAt: '2026-11-25T18:00:00Z',
     },
   ];
+  state.wallets = [
+    {
+      id: 'w-custom-ovo',
+      name: 'OVO Main',
+      type: WalletType.Ovo,
+      balance: 650000,
+      color: '#5B4B8A',
+      icon: 'smartphone',
+      notes: 'Commute & coffee',
+      createdAt: '2026-11-25T09:00:00Z',
+      updatedAt: '2026-11-25T09:00:00Z',
+    },
+  ];
   state.transactions = [
     {
       id: 'tx-custom',
@@ -100,7 +115,19 @@ test('saveDayspaceState and loadDayspaceState round-trip all workspace domains a
       amount: 1200,
       category: 'Freelance',
       date: '2026-11-25',
+      walletId: 'w-custom-ovo',
       createdAt: '2026-11-25T12:00:00Z',
+    },
+    {
+      id: 'tx-transfer',
+      type: TransactionType.Transfer,
+      title: 'Move to savings',
+      amount: 200,
+      category: 'Transfer',
+      date: '2026-11-25',
+      walletId: 'w-custom-ovo',
+      destinationWalletId: 'w-backup',
+      createdAt: '2026-11-25T13:00:00Z',
     },
   ];
   state.pomodoroSettings = {
@@ -129,7 +156,13 @@ test('saveDayspaceState and loadDayspaceState round-trip all workspace domains a
   assert.equal(loaded.tasks[0].id, 't-custom');
   assert.equal(loaded.habits.length, 0);
   assert.equal(loaded.journalEntries[0].mood, JournalMood.Grateful);
+  assert.equal(loaded.wallets.length, 1);
+  assert.equal(loaded.wallets[0].type, WalletType.Ovo);
+  assert.equal(loaded.wallets[0].balance, 650000);
   assert.equal(loaded.transactions[0].amount, 1200);
+  assert.equal(loaded.transactions[0].walletId, 'w-custom-ovo');
+  assert.equal(loaded.transactions[1].type, TransactionType.Transfer);
+  assert.equal(loaded.transactions[1].destinationWalletId, 'w-backup');
   assert.equal(loaded.pomodoroSettings.focusMinutes, 45);
   assert.equal(loaded.pomodoroSettings.ambientSound, 'rain');
   assert.equal(loaded.pomodoroSessions[0].durationMinutes, 45);
@@ -145,9 +178,10 @@ test('exportDayspaceBackup and parseDayspaceBackup validate, sanitize, and rejec
   if (parsed.ok) {
     assert.equal(parsed.state.profile.name, 'Elena');
     assert.equal(parsed.state.tasks.length, original.tasks.length);
+    assert.equal(parsed.state.wallets.length, original.wallets.length);
   }
 
-  // Raw partial state without envelope should still import safely
+  // Raw partial state without envelope should still import safely & deduplicate transactions
   const partialResult = parseDayspaceBackup(
     JSON.stringify({
       tasks: [
@@ -160,6 +194,24 @@ test('exportDayspaceBackup and parseDayspaceBackup validate, sanitize, and rejec
           completed: true,
         },
       ],
+      transactions: [
+        {
+          id: 'dup-id',
+          type: 'expense',
+          title: 'Lunch',
+          amount: 50000,
+          category: 'Dining',
+          date: '2026-11-25',
+        },
+        {
+          id: 'dup-id',
+          type: 'expense',
+          title: 'Lunch duplicate',
+          amount: 50000,
+          category: 'Dining',
+          date: '2026-11-25',
+        },
+      ],
     })
   );
   assert.equal(partialResult.ok, true);
@@ -167,6 +219,7 @@ test('exportDayspaceBackup and parseDayspaceBackup validate, sanitize, and rejec
     assert.equal(partialResult.state.tasks.length, 1);
     assert.equal(partialResult.state.tasks[0].completed, true);
     assert.equal(partialResult.state.habits.length, 0);
+    assert.equal(partialResult.state.transactions.length, 1);
   }
 
   // Reject malformed / unrelated JSON
@@ -185,6 +238,7 @@ test('createEmptyDayspaceState, clearDayspaceStorage, and failing storage handle
   assert.equal(emptyState.habits.length, 0);
   assert.equal(emptyState.events.length, 0);
   assert.equal(emptyState.journalEntries.length, 0);
+  assert.equal(emptyState.wallets.length, 0);
   assert.equal(emptyState.transactions.length, 0);
   assert.equal(emptyState.savingsGoals.length, 0);
   assert.equal(emptyState.pomodoroSessions.length, 0);

@@ -533,6 +533,10 @@ export function SettingsView({
           </span>{' '}
           journal entries ·{' '}
           <span className="font-mono tabular-nums font-medium text-[#1C241E]">
+            {workspaceState.wallets.length}
+          </span>{' '}
+          wallets ·{' '}
+          <span className="font-mono tabular-nums font-medium text-[#1C241E]">
             {workspaceState.transactions.length}
           </span>{' '}
           transactions ·{' '}

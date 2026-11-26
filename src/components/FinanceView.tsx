@@ -1,25 +1,26 @@
 import { FormEvent, useMemo, useState } from 'react';
 import {
   ArrowDownLeft,
+  ArrowLeftRight,
   ArrowUpRight,
   ChevronLeft,
   ChevronRight,
+  FileSpreadsheet,
   Pencil,
   PiggyBank,
   Plus,
   Search,
   Trash2,
+  Wallet as WalletIconLucide,
   X,
 } from 'lucide-react';
 import {
+  DigitalWallet,
   FinanceTransaction,
   SavingsGoal,
   TransactionType,
 } from '../types/dayspace';
-import {
-  APP_CURRENCY_SYMBOL,
-  formatCurrency,
-} from '../utils/currency';
+import { APP_CURRENCY_SYMBOL, formatCurrency } from '../utils/currency';
 import {
   computeCategorySpending,
   computeMonthlyFinanceSummary,
@@ -35,18 +36,30 @@ import {
   shiftMonthKey,
 } from '../utils/productivity';
 import {
+  computeTotalWalletBalance,
+  TRANSFER_CATEGORY,
+  WALLET_TYPE_META,
+} from '../utils/wallets';
+import {
   FinanceModalKind,
   FinanceModals,
   GoalFormPayload,
   TransactionFormPayload,
+  WalletFormPayload,
 } from './FinanceModals';
+import { WalletIconGlyph } from './WalletIconGlyph';
 
 interface FinanceViewProps {
+  wallets: DigitalWallet[];
   transactions: FinanceTransaction[];
   savingsGoals: SavingsGoal[];
+  onAddWallet: (input: WalletFormPayload) => void;
+  onUpdateWallet: (id: string, updates: WalletFormPayload) => void;
+  onDeleteWallet: (walletId: string) => void;
   onAddTransaction: (input: TransactionFormPayload) => void;
   onUpdateTransaction: (id: string, updates: TransactionFormPayload) => void;
   onDeleteTransaction: (id: string) => void;
+  onImportTransactionsCsv: (transactions: FinanceTransaction[]) => void;
   onAddGoal: (input: GoalFormPayload) => void;
   onUpdateGoal: (id: string, updates: GoalFormPayload) => void;
   onContributeGoal: (goalId: string, deltaAmount: number) => void;
@@ -64,11 +77,16 @@ const CATEGORY_BAR_SHADES = [
 ];
 
 export function FinanceView({
+  wallets,
   transactions,
   savingsGoals,
+  onAddWallet,
+  onUpdateWallet,
+  onDeleteWallet,
   onAddTransaction,
   onUpdateTransaction,
   onDeleteTransaction,
+  onImportTransactionsCsv,
   onAddGoal,
   onUpdateGoal,
   onContributeGoal,
@@ -78,12 +96,21 @@ export function FinanceView({
   const currentMonthKey = getMonthKeyFromDateKey(todayKey);
 
   const [selectedMonth, setSelectedMonth] = useState(currentMonthKey);
+  const [ledgerScope, setLedgerScope] = useState<'month' | 'all'>('month');
   const [typeFilter, setTypeFilter] = useState<TransactionType | 'all'>('all');
+  const [walletFilter, setWalletFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState('All');
+  const [dateFilter, setDateFilter] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Modal state
   const [activeModal, setActiveModal] = useState<FinanceModalKind>(null);
+  const [initialTxType, setInitialTxType] = useState<TransactionType>(
+    TransactionType.Expense
+  );
+  const [editingWallet, setEditingWallet] = useState<DigitalWallet | null>(
+    null
+  );
   const [editingTx, setEditingTx] = useState<FinanceTransaction | null>(null);
   const [editingGoal, setEditingGoal] = useState<SavingsGoal | null>(null);
 
@@ -92,6 +119,27 @@ export function FinanceView({
     null
   );
   const [depositAmountInput, setDepositAmountInput] = useState('');
+
+  const totalWalletBalance = useMemo(
+    () => computeTotalWalletBalance(wallets),
+    [wallets]
+  );
+
+  const walletById = useMemo(() => {
+    const map = new Map<string, DigitalWallet>();
+    for (const w of wallets) {
+      map.set(w.id, w);
+    }
+    return map;
+  }, [wallets]);
+
+  const walletNamesById = useMemo(() => {
+    const names: Record<string, string> = {};
+    for (const w of wallets) {
+      names[w.id] = w.name;
+    }
+    return names;
+  }, [wallets]);
 
   const monthlySummary = useMemo(
     () => computeMonthlyFinanceSummary(transactions, selectedMonth),
@@ -117,16 +165,42 @@ export function FinanceView({
     return maxVal;
   }, [cashflowSeries]);
 
+  const effectiveMonthScope =
+    dateFilter || ledgerScope === 'all' ? 'all' : selectedMonth;
+
   const filteredTransactions = useMemo(
     () =>
       filterTransactions(
         transactions,
-        selectedMonth,
+        effectiveMonthScope,
         typeFilter,
         categoryFilter,
-        searchQuery
+        searchQuery,
+        walletFilter,
+        dateFilter,
+        walletNamesById
       ),
-    [transactions, selectedMonth, typeFilter, categoryFilter, searchQuery]
+    [
+      transactions,
+      effectiveMonthScope,
+      typeFilter,
+      categoryFilter,
+      searchQuery,
+      walletFilter,
+      dateFilter,
+      walletNamesById,
+    ]
+  );
+
+  const recentTransactions = useMemo(
+    () =>
+      [...transactions]
+        .sort((a, b) => {
+          if (a.date !== b.date) return b.date.localeCompare(a.date);
+          return b.createdAt.localeCompare(a.createdAt);
+        })
+        .slice(0, 5),
+    [transactions]
   );
 
   const goalsSummary = useMemo(
@@ -135,7 +209,11 @@ export function FinanceView({
   );
 
   const allCategoryOptions = useMemo(() => {
-    const set = new Set<string>([...INCOME_CATEGORIES, ...EXPENSE_CATEGORIES]);
+    const set = new Set<string>([
+      ...INCOME_CATEGORIES,
+      ...EXPENSE_CATEGORIES,
+      TRANSFER_CATEGORY,
+    ]);
     for (const tx of transactions) {
       set.add(tx.category);
     }
@@ -162,25 +240,53 @@ export function FinanceView({
     [transactions, selectedMonth]
   );
 
-  const openNewTransactionModal = () => {
+  const openNewWalletModal = () => {
+    setEditingWallet(null);
     setEditingTx(null);
     setEditingGoal(null);
+    setActiveModal('wallet');
+  };
+
+  const openEditWalletModal = (wallet: DigitalWallet) => {
+    setEditingTx(null);
+    setEditingGoal(null);
+    setEditingWallet(wallet);
+    setActiveModal('wallet');
+  };
+
+  const openNewTransactionModal = (
+    preferredType: TransactionType = TransactionType.Expense
+  ) => {
+    setEditingWallet(null);
+    setEditingTx(null);
+    setEditingGoal(null);
+    setInitialTxType(preferredType);
     setActiveModal('transaction');
   };
 
   const openEditTransactionModal = (tx: FinanceTransaction) => {
+    setEditingWallet(null);
     setEditingGoal(null);
     setEditingTx(tx);
     setActiveModal('transaction');
   };
 
+  const openCsvImportModal = () => {
+    setEditingWallet(null);
+    setEditingTx(null);
+    setEditingGoal(null);
+    setActiveModal('csv');
+  };
+
   const openNewGoalModal = () => {
+    setEditingWallet(null);
     setEditingTx(null);
     setEditingGoal(null);
     setActiveModal('goal');
   };
 
   const openEditGoalModal = (goal: SavingsGoal) => {
+    setEditingWallet(null);
     setEditingTx(null);
     setEditingGoal(goal);
     setActiveModal('goal');
@@ -196,20 +302,42 @@ export function FinanceView({
     setDepositAmountInput('');
   };
 
+  const formatWalletRoute = (tx: FinanceTransaction): string => {
+    const sourceName = tx.walletId
+      ? walletById.get(tx.walletId)?.name || 'Archived wallet'
+      : '';
+    if (tx.type === TransactionType.Transfer) {
+      const destName = tx.destinationWalletId
+        ? walletById.get(tx.destinationWalletId)?.name || 'Archived wallet'
+        : '';
+      if (sourceName && destName) return `${sourceName} → ${destName}`;
+      return sourceName || destName || 'Wallet transfer';
+    }
+    return sourceName || 'Unassigned';
+  };
+
   const selectedMonthLabel = formatMonthKeyLabel(selectedMonth);
   const defaultTxDate =
     selectedMonth === currentMonthKey ? todayKey : `${selectedMonth}-15`;
 
+  const hasActiveLedgerFilters =
+    typeFilter !== 'all' ||
+    walletFilter !== 'all' ||
+    categoryFilter !== 'All' ||
+    dateFilter !== '' ||
+    searchQuery.trim() !== '';
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h1 className="font-serif text-3xl font-medium tracking-tight text-[#1C241E]">
             Personal Finance
           </h1>
           <p className="mt-1 text-sm text-[#58645B] tabular-nums">
-            Fictional sample data · {monthlySummary.transactionCount}{' '}
+            {wallets.length} {wallets.length === 1 ? 'wallet' : 'wallets'} ·{' '}
+            {monthlySummary.transactionCount}{' '}
             {monthlySummary.transactionCount === 1
               ? 'transaction'
               : 'transactions'}{' '}
@@ -217,7 +345,15 @@ export function FinanceView({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-auto">
+        <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto">
+          <button
+            type="button"
+            onClick={openCsvImportModal}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-[#DDD8CD] bg-white text-sm font-medium text-[#1C241E] hover:bg-[#F3EFE6] transition-colors whitespace-nowrap shrink-0"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-[#5C7C66]" />
+            <span>Import CSV</span>
+          </button>
           <button
             type="button"
             onClick={openNewGoalModal}
@@ -226,9 +362,19 @@ export function FinanceView({
             <PiggyBank className="w-4 h-4 text-[#5C7C66]" />
             <span>New goal</span>
           </button>
+          {wallets.length >= 2 && (
+            <button
+              type="button"
+              onClick={() => openNewTransactionModal(TransactionType.Transfer)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl border border-[#DDD8CD] bg-[#EEF4EF] text-sm font-medium text-[#1E3F31] hover:bg-[#DFEBE1] transition-colors whitespace-nowrap shrink-0"
+            >
+              <ArrowLeftRight className="w-4 h-4" />
+              <span>Transfer</span>
+            </button>
+          )}
           <button
             type="button"
-            onClick={openNewTransactionModal}
+            onClick={() => openNewTransactionModal(TransactionType.Expense)}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#1E3F31] text-white text-sm font-medium hover:bg-[#152E24] transition-colors whitespace-nowrap shrink-0"
           >
             <Plus className="w-4 h-4" />
@@ -236,6 +382,162 @@ export function FinanceView({
           </button>
         </div>
       </header>
+
+      {/* Digital Wallets & Total Balance */}
+      <section aria-label="Digital wallets and total balance" className="space-y-4">
+        <div className="rounded-2xl bg-white border border-[#E5E1D8] p-5 sm:p-6 shadow-[0_2px_12px_rgba(28,36,30,0.03)] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <span className="text-xs font-medium text-[#58645B]">
+              Total balance across all wallets
+            </span>
+            <p
+              data-testid="total-wallets-balance"
+              className="mt-1.5 font-serif text-3xl sm:text-4xl font-medium text-[#1E3F31] tabular-nums"
+            >
+              {formatCurrency(totalWalletBalance)}
+            </p>
+            <p className="mt-1 text-xs text-[#58645B]">
+              {wallets.length} active{' '}
+              {wallets.length === 1 ? 'wallet' : 'wallets'} · manual &amp; CSV
+              ledger (no PINs or banking credentials)
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {walletFilter !== 'all' && (
+              <button
+                type="button"
+                onClick={() => setWalletFilter('all')}
+                className="px-3.5 py-2 rounded-xl border border-[#DDD8CD] bg-[#FBF9F4] text-xs font-medium text-[#1E3F31] hover:bg-[#EEF4EF] transition-colors whitespace-nowrap"
+              >
+                Show all wallets
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={openNewWalletModal}
+              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#EEF4EF] border border-[#C8D8CA] text-sm font-medium text-[#1E3F31] hover:bg-[#DFEBDF] transition-colors whitespace-nowrap"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add wallet</span>
+            </button>
+          </div>
+        </div>
+
+        {wallets.length === 0 ? (
+          <div className="rounded-2xl bg-white border border-[#E5E1D8] p-10 text-center shadow-[0_2px_12px_rgba(28,36,30,0.03)]">
+            <WalletIconLucide
+              className="w-7 h-7 text-[#7A9A83] mx-auto mb-2.5"
+              aria-hidden="true"
+            />
+            <p className="text-base font-medium text-[#1C241E]">
+              No digital wallets added yet
+            </p>
+            <p className="mt-1 text-sm text-[#58645B]">
+              Add DANA, GoPay, OVO, ShopeePay, LinkAja, bank accounts, cash, or
+              custom wallets to track balances automatically.
+            </p>
+            <button
+              type="button"
+              onClick={openNewWalletModal}
+              className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#1E3F31] text-white text-sm font-medium hover:bg-[#152E24] transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Add your first wallet</span>
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {wallets.map((wallet) => {
+              const isSelected = walletFilter === wallet.id;
+              const typeMeta = WALLET_TYPE_META[wallet.type];
+              return (
+                <div
+                  key={wallet.id}
+                  data-testid={`wallet-card-${wallet.id}`}
+                  className={`rounded-2xl bg-white border p-4 shadow-[0_2px_12px_rgba(28,36,30,0.03)] transition-colors flex flex-col justify-between gap-3 ${
+                    isSelected
+                      ? 'border-[#1E3F31] ring-1 ring-[#1E3F31] bg-[#F5F9F5]'
+                      : 'border-[#E5E1D8] hover:border-[#B6C7B9]'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setWalletFilter((prev) =>
+                          prev === wallet.id ? 'all' : wallet.id
+                        )
+                      }
+                      aria-pressed={isSelected}
+                      aria-label={`Filter transactions by ${wallet.name}`}
+                      className="flex items-start gap-3 text-left min-w-0 flex-1 focus:outline-none"
+                    >
+                      <span
+                        className="inline-flex h-10 w-10 items-center justify-center rounded-xl text-white shrink-0"
+                        style={{ backgroundColor: wallet.color }}
+                      >
+                        <WalletIconGlyph
+                          icon={wallet.icon}
+                          className="w-4 h-4"
+                        />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-[11px] font-medium text-[#58645B] truncate">
+                          {typeMeta?.label || 'Wallet'}
+                        </span>
+                        <span className="block text-sm font-semibold text-[#1C241E] truncate">
+                          {wallet.name}
+                        </span>
+                      </span>
+                    </button>
+
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => openEditWalletModal(wallet)}
+                        aria-label={`Edit wallet "${wallet.name}"`}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[#6A786D] hover:bg-[#F3EFE6] hover:text-[#1E3F31] transition-colors"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (walletFilter === wallet.id) {
+                            setWalletFilter('all');
+                          }
+                          onDeleteWallet(wallet.id);
+                        }}
+                        aria-label={`Delete wallet "${wallet.name}"`}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[#6A786D] hover:bg-[#F3EFE6] hover:text-[#B42318] transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p
+                      className={`font-serif text-2xl font-medium tabular-nums ${
+                        wallet.balance < 0 ? 'text-[#B42318]' : 'text-[#1C241E]'
+                      }`}
+                    >
+                      {formatCurrency(wallet.balance)}
+                    </p>
+                    <p className="mt-0.5 text-xs text-[#58645B] truncate">
+                      {wallet.notes ||
+                        (isSelected
+                          ? 'Filtering transactions below'
+                          : 'Click wallet to filter history')}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {/* Month Switcher & Monthly Summary Strip */}
       <section aria-label="Monthly financial summary" className="space-y-4">
@@ -358,9 +660,9 @@ export function FinanceView({
         </div>
       </section>
 
-      {/* Spending & Cash Flow Charts Row */}
+      {/* Spending, Cash Flow Charts & Recent Activity */}
       <section
-        aria-label="Spending and cash flow charts"
+        aria-label="Spending, cash flow charts, and recent activity"
         className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch"
       >
         {/* 6-Month Cash Flow Grouped Bar Chart */}
@@ -409,15 +711,17 @@ export function FinanceView({
                 <button
                   key={pt.monthKey}
                   type="button"
-                  onClick={() => setSelectedMonth(pt.monthKey)}
+                  onClick={() => {
+                    setSelectedMonth(pt.monthKey);
+                    setLedgerScope('month');
+                    setDateFilter('');
+                  }}
                   aria-pressed={isSelected}
                   title={`${formatMonthKeyLabel(pt.monthKey)}: Income ${formatCurrency(
                     pt.income
                   )}, Expenses ${formatCurrency(pt.expenses)}`}
                   className={`flex flex-col items-center justify-end gap-2 rounded-xl px-1 py-2 transition-colors ${
-                    isSelected
-                      ? 'bg-[#EEF4EF]'
-                      : 'hover:bg-[#FAF8F3]'
+                    isSelected ? 'bg-[#EEF4EF]' : 'hover:bg-[#FAF8F3]'
                   }`}
                 >
                   <div className="w-full h-36 sm:h-44 flex items-end justify-center gap-1 sm:gap-1.5 px-0.5">
@@ -530,6 +834,77 @@ export function FinanceView({
         </div>
       </section>
 
+      {/* Recent Transactions Snapshot */}
+      <section
+        aria-label="Recent transactions"
+        className="rounded-2xl bg-white border border-[#E5E1D8] p-5 shadow-[0_2px_12px_rgba(28,36,30,0.03)]"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#EFECE4]">
+          <div>
+            <h2 className="font-serif text-xl font-medium text-[#1C241E]">
+              Recent transactions
+            </h2>
+            <p className="text-xs text-[#58645B] mt-0.5">
+              Latest activity across all wallets
+            </p>
+          </div>
+          {transactions.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setLedgerScope('all');
+                setDateFilter('');
+              }}
+              className="text-xs font-medium text-[#1E3F31] hover:underline whitespace-nowrap"
+            >
+              View full history ({transactions.length})
+            </button>
+          )}
+        </div>
+
+        {recentTransactions.length === 0 ? (
+          <p className="py-6 text-center text-sm text-[#58645B]">
+            No transactions recorded yet. Add income, an expense, or a wallet
+            transfer above.
+          </p>
+        ) : (
+          <div className="divide-y divide-[#F2EFE8]">
+            {recentTransactions.map((tx) => {
+              const isIncome = tx.type === TransactionType.Income;
+              const isTransfer = tx.type === TransactionType.Transfer;
+              return (
+                <div
+                  key={tx.id}
+                  className="py-3 flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-[#1C241E] truncate">
+                      {tx.title}
+                    </p>
+                    <p className="text-xs text-[#58645B] truncate">
+                      {formatWalletRoute(tx)} · {tx.category} ·{' '}
+                      {formatShortDateLabel(tx.date, todayKey)}
+                    </p>
+                  </div>
+                  <span
+                    className={`font-mono text-sm font-semibold tabular-nums whitespace-nowrap shrink-0 ${
+                      isIncome
+                        ? 'text-[#1E3F31]'
+                        : isTransfer
+                        ? 'text-[#2E6F95]'
+                        : 'text-[#1C241E]'
+                    }`}
+                  >
+                    {isIncome ? '+' : isTransfer ? '⇄ ' : '-'}
+                    {formatCurrency(tx.amount)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
       {/* Savings Goals Section */}
       <section aria-label="Savings goals" className="space-y-4">
         <div className="flex flex-wrap items-end justify-between gap-3">
@@ -558,7 +933,8 @@ export function FinanceView({
               No savings goals set yet
             </p>
             <p className="mt-1 text-sm text-[#58645B]">
-              Create a goal to track progress toward an emergency reserve, trip, or milestone.
+              Create a goal to track progress toward an emergency reserve, trip,
+              or milestone.
             </p>
             <button
               type="button"
@@ -738,21 +1114,26 @@ export function FinanceView({
 
       {/* Transactions Ledger */}
       <section
-        aria-label="Monthly transactions ledger"
+        aria-label="Transactions ledger"
         className="rounded-2xl bg-white border border-[#E5E1D8] overflow-hidden shadow-[0_2px_14px_rgba(28,36,30,0.03)]"
       >
         <div className="p-5 border-b border-[#EFECE4] bg-[#FAF8F3] space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
             <div>
               <h2 className="font-serif text-xl font-medium text-[#1C241E]">
-                Transactions
+                Transaction history
               </h2>
               <p className="text-xs text-[#58645B] mt-0.5 tabular-nums">
                 {filteredTransactions.length}{' '}
                 {filteredTransactions.length === 1
                   ? 'transaction'
                   : 'transactions'}{' '}
-                shown for {selectedMonthLabel}
+                shown ·{' '}
+                {dateFilter
+                  ? `Date ${dateFilter}`
+                  : ledgerScope === 'all'
+                  ? 'All dates'
+                  : selectedMonthLabel}
               </p>
             </div>
 
@@ -767,6 +1148,7 @@ export function FinanceView({
                     { id: 'all', label: 'All' },
                     { id: TransactionType.Income, label: 'Income' },
                     { id: TransactionType.Expense, label: 'Expenses' },
+                    { id: TransactionType.Transfer, label: 'Transfers' },
                   ] as const
                 ).map((tab) => {
                   const active = typeFilter === tab.id;
@@ -789,6 +1171,72 @@ export function FinanceView({
                 })}
               </div>
 
+              <button
+                type="button"
+                onClick={() =>
+                  setLedgerScope((prev) => (prev === 'month' ? 'all' : 'month'))
+                }
+                aria-pressed={ledgerScope === 'all'}
+                className={`px-3 py-1.5 rounded-xl border text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  ledgerScope === 'all'
+                    ? 'bg-[#EEF4EF] border-[#7A9A83] text-[#1E3F31]'
+                    : 'bg-white border-[#DDD8CD] text-[#58645B] hover:text-[#1C241E]'
+                }`}
+              >
+                {ledgerScope === 'all' ? 'All months' : 'This month'}
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-2.5">
+            <div className="relative lg:col-span-5">
+              <label htmlFor="finance-search" className="sr-only">
+                Search transactions
+              </label>
+              <Search
+                className="w-4 h-4 text-[#6A786D] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                aria-hidden="true"
+              />
+              <input
+                id="finance-search"
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search description, wallet, category, notes..."
+                className="w-full rounded-xl border border-[#DDD8CD] bg-white pl-10 pr-9 py-2 text-sm text-[#1C241E] placeholder:text-[#7D8880] focus:border-[#1E3F31] focus:outline-none"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Clear transaction search"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 inline-flex h-7 w-7 items-center justify-center rounded-lg text-[#6A786D] hover:bg-[#EFECE4] hover:text-[#1C241E]"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            <div className="lg:col-span-3">
+              <label htmlFor="finance-wallet-filter" className="sr-only">
+                Filter transactions by wallet
+              </label>
+              <select
+                id="finance-wallet-filter"
+                value={walletFilter}
+                onChange={(e) => setWalletFilter(e.target.value)}
+                className="w-full rounded-xl border border-[#DDD8CD] bg-white px-3 py-2 text-xs font-medium text-[#1C241E] focus:border-[#1E3F31] focus:outline-none"
+              >
+                <option value="all">All wallets</option>
+                {wallets.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="lg:col-span-2">
               <label htmlFor="finance-category-filter" className="sr-only">
                 Filter transactions by category
               </label>
@@ -796,7 +1244,7 @@ export function FinanceView({
                 id="finance-category-filter"
                 value={categoryFilter}
                 onChange={(e) => setCategoryFilter(e.target.value)}
-                className="rounded-xl border border-[#DDD8CD] bg-white px-3 py-1.5 text-xs font-medium text-[#1C241E] focus:border-[#1E3F31] focus:outline-none"
+                className="w-full rounded-xl border border-[#DDD8CD] bg-white px-3 py-2 text-xs font-medium text-[#1C241E] focus:border-[#1E3F31] focus:outline-none"
               >
                 {allCategoryOptions.map((cat) => (
                   <option key={cat} value={cat}>
@@ -805,54 +1253,51 @@ export function FinanceView({
                 ))}
               </select>
             </div>
-          </div>
 
-          <div className="relative">
-            <label htmlFor="finance-search" className="sr-only">
-              Search transactions
-            </label>
-            <Search
-              className="w-4 h-4 text-[#6A786D] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
-              aria-hidden="true"
-            />
-            <input
-              id="finance-search"
-              type="search"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search transactions by description, category, or notes..."
-              className="w-full rounded-xl border border-[#DDD8CD] bg-white pl-10 pr-9 py-2 text-sm text-[#1C241E] placeholder:text-[#7D8880] focus:border-[#1E3F31] focus:outline-none"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                aria-label="Clear transaction search"
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 inline-flex h-7 w-7 items-center justify-center rounded-lg text-[#6A786D] hover:bg-[#EFECE4] hover:text-[#1C241E]"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
+            <div className="lg:col-span-2 flex items-center gap-1.5">
+              <label htmlFor="finance-date-filter" className="sr-only">
+                Filter transactions by date
+              </label>
+              <input
+                id="finance-date-filter"
+                type="date"
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+                aria-label="Filter transactions by specific date"
+                className="w-full min-w-0 rounded-xl border border-[#DDD8CD] bg-white px-2.5 py-1.5 text-xs font-medium text-[#1C241E] focus:border-[#1E3F31] focus:outline-none"
+              />
+              {dateFilter && (
+                <button
+                  type="button"
+                  onClick={() => setDateFilter('')}
+                  aria-label="Clear date filter"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#DDD8CD] bg-white text-[#58645B] hover:bg-[#F3EFE6] shrink-0"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
         {filteredTransactions.length === 0 ? (
           <div className="p-12 text-center">
             <p className="text-base font-medium text-[#1C241E]">
-              No matching transactions in {selectedMonthLabel}
+              No matching transactions found
             </p>
             <p className="mt-1 text-sm text-[#58645B]">
-              Try adjusting your filters or add a new income or expense entry.
+              Try adjusting your wallet, category, or date filter, or add a new
+              entry.
             </p>
             <div className="mt-4 flex items-center justify-center gap-2">
-              {(typeFilter !== 'all' ||
-                categoryFilter !== 'All' ||
-                searchQuery.trim() !== '') && (
+              {hasActiveLedgerFilters && (
                 <button
                   type="button"
                   onClick={() => {
                     setTypeFilter('all');
+                    setWalletFilter('all');
                     setCategoryFilter('All');
+                    setDateFilter('');
                     setSearchQuery('');
                   }}
                   className="px-4 py-2 rounded-xl border border-[#DDD8CD] bg-white text-sm font-medium text-[#1C241E] hover:bg-[#F3EFE6] transition-colors"
@@ -862,7 +1307,7 @@ export function FinanceView({
               )}
               <button
                 type="button"
-                onClick={openNewTransactionModal}
+                onClick={() => openNewTransactionModal(TransactionType.Expense)}
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#E8EFE9] text-[#1E3F31] text-sm font-medium hover:bg-[#D8E5DA] transition-colors"
               >
                 <Plus className="w-4 h-4" />
@@ -879,6 +1324,7 @@ export function FinanceView({
                   <tr className="border-b border-[#EFECE4] bg-[#FCFBF8] text-xs font-semibold text-[#58645B]">
                     <th className="py-3 pl-6 pr-3">Date</th>
                     <th className="py-3 px-3">Description</th>
+                    <th className="py-3 px-3">Wallet</th>
                     <th className="py-3 px-3">Category</th>
                     <th className="py-3 px-3">Type</th>
                     <th className="py-3 px-3 text-right">Amount</th>
@@ -890,6 +1336,7 @@ export function FinanceView({
                 <tbody className="divide-y divide-[#F2EFE8]">
                   {filteredTransactions.map((tx) => {
                     const isIncome = tx.type === TransactionType.Income;
+                    const isTransfer = tx.type === TransactionType.Transfer;
                     return (
                       <tr
                         key={tx.id}
@@ -908,6 +1355,9 @@ export function FinanceView({
                             </p>
                           )}
                         </td>
+                        <td className="py-3.5 px-3 text-xs text-[#4B574E] whitespace-nowrap">
+                          {formatWalletRoute(tx)}
+                        </td>
                         <td className="py-3.5 px-3 text-xs text-[#58645B] whitespace-nowrap">
                           {tx.category}
                         </td>
@@ -916,18 +1366,28 @@ export function FinanceView({
                             className={
                               isIncome
                                 ? 'font-medium text-[#1E3F31]'
+                                : isTransfer
+                                ? 'font-medium text-[#2E6F95]'
                                 : 'text-[#58645B]'
                             }
                           >
-                            {isIncome ? 'Income' : 'Expense'}
+                            {isIncome
+                              ? 'Income'
+                              : isTransfer
+                              ? 'Transfer'
+                              : 'Expense'}
                           </span>
                         </td>
                         <td
                           className={`py-3.5 px-3 text-right font-mono text-sm font-medium tabular-nums whitespace-nowrap ${
-                            isIncome ? 'text-[#1E3F31]' : 'text-[#1C241E]'
+                            isIncome
+                              ? 'text-[#1E3F31]'
+                              : isTransfer
+                              ? 'text-[#2E6F95]'
+                              : 'text-[#1C241E]'
                           }`}
                         >
-                          {isIncome ? '+' : '-'}
+                          {isIncome ? '+' : isTransfer ? '⇄ ' : '-'}
                           {formatCurrency(tx.amount)}
                         </td>
                         <td className="py-3.5 pl-2 pr-6 text-right whitespace-nowrap">
@@ -961,6 +1421,7 @@ export function FinanceView({
             <div className="md:hidden divide-y divide-[#F2EFE8]">
               {filteredTransactions.map((tx) => {
                 const isIncome = tx.type === TransactionType.Income;
+                const isTransfer = tx.type === TransactionType.Transfer;
                 return (
                   <div key={tx.id} className="p-4 space-y-2">
                     <div className="flex items-start justify-between gap-3">
@@ -969,16 +1430,25 @@ export function FinanceView({
                           {tx.title}
                         </p>
                         <p className="text-xs text-[#58645B] mt-0.5">
-                          {tx.category} · {isIncome ? 'Income' : 'Expense'} ·{' '}
-                          {tx.date}
+                          {formatWalletRoute(tx)} · {tx.category} ·{' '}
+                          {isIncome
+                            ? 'Income'
+                            : isTransfer
+                            ? 'Transfer'
+                            : 'Expense'}{' '}
+                          · {tx.date}
                         </p>
                       </div>
                       <span
                         className={`font-mono text-sm font-semibold tabular-nums whitespace-nowrap shrink-0 ${
-                          isIncome ? 'text-[#1E3F31]' : 'text-[#1C241E]'
+                          isIncome
+                            ? 'text-[#1E3F31]'
+                            : isTransfer
+                            ? 'text-[#2E6F95]'
+                            : 'text-[#1C241E]'
                         }`}
                       >
-                        {isIncome ? '+' : '-'}
+                        {isIncome ? '+' : isTransfer ? '⇄ ' : '-'}
                         {formatCurrency(tx.amount)}
                       </span>
                     </div>
@@ -1017,16 +1487,25 @@ export function FinanceView({
 
       <FinanceModals
         activeModal={activeModal}
+        initialTransactionType={initialTxType}
+        wallets={wallets}
+        transactions={transactions}
+        editingWallet={editingWallet}
         editingTransaction={editingTx}
         editingGoal={editingGoal}
         defaultDate={defaultTxDate}
+        defaultWalletId={walletFilter !== 'all' ? walletFilter : undefined}
         onClose={() => {
           setActiveModal(null);
+          setEditingWallet(null);
           setEditingTx(null);
           setEditingGoal(null);
         }}
+        onAddWallet={onAddWallet}
+        onUpdateWallet={onUpdateWallet}
         onAddTransaction={onAddTransaction}
         onUpdateTransaction={onUpdateTransaction}
+        onImportTransactionsCsv={onImportTransactionsCsv}
         onAddGoal={onAddGoal}
         onUpdateGoal={onUpdateGoal}
       />

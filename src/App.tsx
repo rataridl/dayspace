@@ -45,9 +45,13 @@ export default function App() {
     addJournalEntry,
     updateJournalEntry,
     deleteJournalEntry,
+    addWallet,
+    updateWallet,
+    deleteWallet,
     addTransaction,
     updateTransaction,
     deleteTransaction,
+    importTransactionsCsv,
     addSavingsGoal,
     updateSavingsGoal,
     contributeToSavingsGoal,
@@ -223,11 +227,16 @@ export default function App() {
 
           {activeView === NavigationView.Finance && (
             <FinanceView
+              wallets={state.wallets}
               transactions={state.transactions}
               savingsGoals={state.savingsGoals}
+              onAddWallet={addWallet}
+              onUpdateWallet={updateWallet}
+              onDeleteWallet={deleteWallet}
               onAddTransaction={addTransaction}
               onUpdateTransaction={updateTransaction}
               onDeleteTransaction={deleteTransaction}
+              onImportTransactionsCsv={importTransactionsCsv}
               onAddGoal={addSavingsGoal}
               onUpdateGoal={updateSavingsGoal}
               onContributeGoal={contributeToSavingsGoal}

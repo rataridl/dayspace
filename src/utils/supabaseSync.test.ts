@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { WalletType } from '../types/dayspace';
 import { createInitialDayspaceState } from '../data/seed';
 import { evaluateSupabaseEnv, normalizeEnvValue } from '../lib/supabase';
 import { createEmptyDayspaceState } from './storage';
@@ -14,6 +15,21 @@ test('hasMeaningfulWorkspaceData distinguishes empty from populated workspaces',
 
   const populated = createInitialDayspaceState();
   assert.equal(hasMeaningfulWorkspaceData(populated), true);
+
+  const walletOnly = createEmptyDayspaceState('Clara');
+  walletOnly.wallets = [
+    {
+      id: 'w-1',
+      name: 'DANA',
+      type: WalletType.Dana,
+      balance: 250000,
+      color: '#2E6F95',
+      icon: 'smartphone',
+      createdAt: '2026-11-26T00:00:00Z',
+      updatedAt: '2026-11-26T00:00:00Z',
+    },
+  ];
+  assert.equal(hasMeaningfulWorkspaceData(walletOnly), true);
 });
 
 test('resolveInitialCloudSync never overwrites local data with missing or empty cloud data', () => {

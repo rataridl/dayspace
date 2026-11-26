@@ -24,6 +24,7 @@ export function hasMeaningfulWorkspaceData(state: DayspaceState): boolean {
     state.habits.length > 0 ||
     state.events.length > 0 ||
     state.journalEntries.length > 0 ||
+    state.wallets.length > 0 ||
     state.transactions.length > 0 ||
     state.savingsGoals.length > 0 ||
     state.pomodoroSessions.length > 0

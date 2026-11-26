@@ -3,6 +3,7 @@ import {
   CalendarDisplayMode,
   CalendarEvent,
   DayspaceState,
+  DigitalWallet,
   FinanceTransaction,
   HabitItem,
   JournalEntry,
@@ -15,6 +16,8 @@ import {
   TaskItem,
   TaskPriority,
   TransactionType,
+  WalletIcon,
+  WalletType,
 } from '../types/dayspace';
 import {
   isQuotaExceededError,
@@ -25,6 +28,10 @@ import {
   DEFAULT_POMODORO_SETTINGS,
   getTodayDateKey,
 } from './productivity';
+import {
+  deduplicateTransactions,
+  WALLET_TYPE_META,
+} from './wallets';
 
 export const DAYSPACE_STORAGE_KEY = 'dayspace.workspace.v1';
 export const DAYSPACE_BACKUP_SCHEMA = 'dayspace-backup';
@@ -51,6 +58,16 @@ const VALID_PRIORITIES = new Set<string>(Object.values(TaskPriority));
 const VALID_CATEGORIES = new Set<string>(Object.values(TaskCategory));
 const VALID_MOODS = new Set<string>(Object.values(JournalMood));
 const VALID_TX_TYPES = new Set<string>(Object.values(TransactionType));
+const VALID_WALLET_TYPES = new Set<string>(Object.values(WalletType));
+const VALID_WALLET_ICONS = new Set<WalletIcon>([
+  'wallet',
+  'smartphone',
+  'landmark',
+  'banknote',
+  'credit-card',
+  'coins',
+  'sparkles',
+]);
 const VALID_POMODORO_MODES = new Set<string>(Object.values(PomodoroMode));
 const VALID_AMBIENT_SOUNDS = new Set<string>([
   'none',
@@ -208,6 +225,54 @@ function sanitizeJournalEntries(
   return result;
 }
 
+function sanitizeWallets(
+  raw: unknown,
+  fallback: DigitalWallet[]
+): DigitalWallet[] {
+  if (!Array.isArray(raw)) return fallback;
+  const seenIds = new Set<string>();
+  const result: DigitalWallet[] = [];
+
+  for (const item of raw) {
+    if (!isRecord(item)) continue;
+    const id = asNonEmptyString(item.id).trim();
+    const name = asNonEmptyString(item.name).trim();
+    if (!id || !name || seenIds.has(id)) continue;
+    seenIds.add(id);
+
+    const type = VALID_WALLET_TYPES.has(String(item.type))
+      ? (item.type as WalletType)
+      : WalletType.Custom;
+    const preset = WALLET_TYPE_META[type];
+    const balanceNum = Number(item.balance);
+    const rawColor = typeof item.color === 'string' ? item.color.trim() : '';
+    const color = /^#[0-9a-fA-F]{3,8}$/.test(rawColor)
+      ? rawColor
+      : preset.defaultColor;
+    const icon = VALID_WALLET_ICONS.has(item.icon as WalletIcon)
+      ? (item.icon as WalletIcon)
+      : preset.defaultIcon;
+    const nowIso = new Date().toISOString();
+
+    result.push({
+      id,
+      name,
+      type,
+      balance: Number.isFinite(balanceNum) ? balanceNum : 0,
+      notes:
+        typeof item.notes === 'string' && item.notes.trim()
+          ? item.notes.trim()
+          : undefined,
+      color,
+      icon,
+      createdAt: asNonEmptyString(item.createdAt, nowIso),
+      updatedAt: asNonEmptyString(item.updatedAt, nowIso),
+    });
+  }
+
+  return result;
+}
+
 function sanitizeTransactions(
   raw: unknown,
   fallback: FinanceTransaction[]
@@ -223,6 +288,16 @@ function sanitizeTransactions(
       ? (item.type as TransactionType)
       : TransactionType.Expense;
     const amountNum = Number(item.amount);
+    const walletId =
+      typeof item.walletId === 'string' && item.walletId.trim()
+        ? item.walletId.trim()
+        : undefined;
+    const destinationWalletId =
+      type === TransactionType.Transfer &&
+      typeof item.destinationWalletId === 'string' &&
+      item.destinationWalletId.trim()
+        ? item.destinationWalletId.trim()
+        : undefined;
     result.push({
       id,
       type,
@@ -230,6 +305,8 @@ function sanitizeTransactions(
       amount: Number.isFinite(amountNum) ? Math.max(0, amountNum) : 0,
       category: asNonEmptyString(item.category, 'Other'),
       date: asNonEmptyString(item.date).trim() || getTodayDateKey(),
+      ...(walletId ? { walletId } : {}),
+      ...(destinationWalletId ? { destinationWalletId } : {}),
       notes:
         typeof item.notes === 'string' && item.notes.trim()
           ? item.notes
@@ -237,7 +314,7 @@ function sanitizeTransactions(
       createdAt: asNonEmptyString(item.createdAt, new Date().toISOString()),
     });
   }
-  return result;
+  return deduplicateTransactions(result);
 }
 
 function sanitizeSavingsGoals(
@@ -384,6 +461,7 @@ export function sanitizeDayspaceState(
       raw.journalEntries,
       fallback.journalEntries
     ),
+    wallets: sanitizeWallets(raw.wallets, fallback.wallets),
     transactions: sanitizeTransactions(raw.transactions, fallback.transactions),
     savingsGoals: sanitizeSavingsGoals(raw.savingsGoals, fallback.savingsGoals),
     pomodoroSettings: sanitizePomodoroSettings(
@@ -414,6 +492,7 @@ export function createEmptyDayspaceState(
     habits: [],
     events: [],
     journalEntries: [],
+    wallets: [],
     transactions: [],
     savingsGoals: [],
     pomodoroSettings: { ...DEFAULT_POMODORO_SETTINGS },
@@ -516,6 +595,7 @@ const RECOGNIZED_DAYSPACE_KEYS = [
   'habits',
   'events',
   'journalEntries',
+  'wallets',
   'transactions',
   'savingsGoals',
   'pomodoroSettings',
